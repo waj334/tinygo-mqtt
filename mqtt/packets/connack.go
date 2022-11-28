@@ -34,6 +34,8 @@ type Connack struct {
 	Flags      primitives.PrimitiveByte
 	ReasonCode primitives.PrimitiveByte
 
+	SessionPresent bool
+
 	/* Properties */
 	SessionExpiryInterval   primitives.PrimitiveUint32
 	ReceiveMaximum          primitives.PrimitiveUint16
@@ -63,6 +65,8 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 		return 0, err
 	}
 	n += count
+
+	c.SessionPresent = (c.Flags & 0x01) != 0
 
 	if n >= int64(c.Header.Remaining) {
 		return

@@ -27,14 +27,14 @@ package mqtt
 import (
 	"context"
 	"errors"
-	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
-	"github.com/waj334/tinygo-mqtt/mqtt/storage"
 	"net"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/waj334/tinygo-mqtt/mqtt/packets"
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
+	"github.com/waj334/tinygo-mqtt/mqtt/storage"
 )
 
 type Client struct {
@@ -530,16 +530,18 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 	}
 
 	// Perform preflight packet persistence operations
-	if c.storage != nil && pub.QoS > 0 {
+	if pub.QoS > 0 {
 		// Assign a packet identifier if none is set
 		if pub.PacketIdentifier == 0 {
 			pub.PacketIdentifier = primitives.PrimitiveUint16(c.packetIdCounter)
 			c.packetIdCounter++
 		}
 
-		// Store this publish control packet
-		if err = c.storage.Store(uint16(pub.PacketIdentifier), pub); err != nil {
-			return err
+		if c.storage != nil {
+			// Store this publish control packet
+			if err = c.storage.Store(uint16(pub.PacketIdentifier), pub); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -731,7 +733,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 		// Drop any persisted publish with the same packet identifier
 		if c.storage != nil {
 			if err = c.storage.Drop(puback.PacketIdentifier.Value()); err != nil {
-				return
+				return err
 			}
 		}
 

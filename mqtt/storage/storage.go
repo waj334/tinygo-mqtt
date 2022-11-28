@@ -28,7 +28,7 @@ import "errors"
 
 var (
 	ErrDuplicateEntry = errors.New("control packet with specified identifier is already present in persistent storage")
-	ErrNoEntry        = errors.New("no control with the specified identifier is present in persistent storage")
+	ErrNoEntry        = errors.New("no control packet with the specified identifier is present in persistent storage")
 )
 
 type Storage interface {

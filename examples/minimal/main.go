@@ -30,6 +30,7 @@ import (
 	"github.com/waj334/tinygo-mqtt/mqtt"
 	"github.com/waj334/tinygo-mqtt/mqtt/packets"
 	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
+	"github.com/waj334/tinygo-mqtt/mqtt/storage/memory"
 	"log"
 	"math/rand"
 	"net"
@@ -37,24 +38,11 @@ import (
 )
 
 func main() {
-	// Open connection to test server
-	// Note: For baremetal targets, replace the following with the necessary method of acquiring a Conn.
-	conn, err := net.Dial("tcp", "test.mosquitto.org:1883")
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	// Create a new client
-	client := mqtt.NewClient(conn)
-
-	// Create an event channel to be notified on by the client. This channel will hold at most 10 pending events.
-	events := client.CreateEventChannel(10)
-
 	// Generate random client id
 	clientId := fmt.Sprintf("super-secret-test-client-%d", rand.Int63())
 
 	// Set up a connection packet
-	connPacket := packets.Connect{
+	connectPacket := packets.Connect{
 		Version:                    packets.MQTT5,
 		ClientId:                   primitives.PrimitiveString(clientId),
 		Username:                   "not-used",
@@ -62,9 +50,9 @@ func main() {
 		WillRetain:                 false,
 		WillQos:                    0,
 		Will:                       "",
-		CleanSession:               true,
+		CleanSession:               false,
 		KeepAlive:                  30,
-		SessionExpiryInterval:      0,
+		SessionExpiryInterval:      primitives.PrimitiveUint32((time.Minute * 5).Minutes()),
 		ReceiveMaximum:             0,
 		MaximumPacketSize:          0,
 		TopicAliasMaximum:          0,
@@ -73,12 +61,31 @@ func main() {
 		UserProperties:             nil,
 	}
 
+	// Persist storage between connections
+	storage := memory.NewStorage()
+
+restart:
+	// Open connection to test server
+	// Note: For baremetal targets, replace the following with the necessary method of acquiring a Conn.
+	conn, err := net.Dial("tcp", "broker.hivemq.com:1883")
+	//conn, err := net.Dial("tcp", "test.mosquitto.org:1883")
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	// Create a new client
+	client := mqtt.NewClient(conn)
+	client.SetStorage(storage)
+
+	// Create an event channel to be notified on by the client. This channel will hold at most 10 pending events.
+	events := client.CreateEventChannel(10)
+
 	// Set a 30-second deadline for connecting
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	defer cancel()
 
 	// Attempt to connect
-	if err = client.Connect(ctx, connPacket); err != nil {
+	if err = client.Connect(ctx, connectPacket); err != nil {
 		log.Fatalln(err)
 	}
 
@@ -90,18 +97,20 @@ func main() {
 		// Use ticker to send periodic keep-alive control packets
 		ticker := time.NewTicker(client.KeepAliveInterval())
 		ticker2 := time.NewTicker(time.Second)
+		ticker2.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
 				if err := client.KeepAlive(); err != nil {
-					log.Fatalln("Keep Alive Error:", err)
+					log.Println("Keep Alive Error:", err)
+					return
 				}
 			case <-ticker2.C:
 				// Publish a message
 				if err = client.Publish(context.Background(), packets.Publish{
 					Retain:  false,
-					QoS:     0,
+					QoS:     packets.QoS1,
 					Topic:   "/test/ping",
 					Payload: []byte("pong"),
 				}); err != nil {
@@ -111,11 +120,22 @@ func main() {
 				if e != nil {
 					switch e.PacketType {
 					case packets.CONNACK:
+						connack := e.Data.(*packets.Connack)
 						log.Println("MQTT client connected!")
+
+						if connack.SessionPresent {
+							log.Println("The last session has been persisted by the server")
+						} else {
+							log.Println("The last session has not been persisted by the server")
+							log.Println("Reason:", mqtt.ReasonCode(connack.ReasonCode))
+						}
+
 					case packets.DISCONNECT:
-						log.Println("MQTT client has been disconnected")
+						disconnect := e.Data.(*packets.Disconnect)
+						log.Printf("MQTT client has been disconnected: %2x %v", disconnect.ReasonCode, mqtt.ReasonCode(disconnect.ReasonCode))
 					case packets.SUBACK:
 						log.Println("Subscribed to topic(s)")
+						ticker2.Reset(time.Second)
 					case packets.PUBLISH:
 						pub := e.Data.(*packets.Publish)
 						log.Println("General channel received publish:", string(pub.Payload))
@@ -136,6 +156,13 @@ func main() {
 						pub := e.Data.(*packets.Publish)
 						log.Println("Topic channel received publish:", string(pub.Payload))
 						log.Println("Publish topic:", pub.Topic)
+
+						if pub.Duplicate {
+							log.Println("Publish is duplicate. Acknowledging it")
+							if err := pub.Ack(context.Background()); err != nil {
+								log.Println("Ack error: err")
+							}
+						}
 					}
 				}
 			default:
@@ -145,7 +172,8 @@ func main() {
 				// Poll for incoming messages
 				if err := client.Poll(ctx); err != nil {
 					cancel()
-					log.Fatalf("Poll error: %v\n", err)
+					log.Printf("Poll error: %v\n", err)
+					return
 				}
 				cancel()
 			}
@@ -159,6 +187,7 @@ func main() {
 	topic := mqtt.Topic{}
 	topic.SetFilter("/test/ping").SetQoS(packets.QoS0)
 	topic.SetEventChannel(topicEvents)
+	topic.SetQoS(packets.QoS1)
 
 	// Subscribe to topics
 	if err = client.Subscribe(ctx, []mqtt.Topic{
@@ -167,17 +196,23 @@ func main() {
 		log.Fatalln("Subscribe error:", err)
 	}
 
-	// Unsubscribe after 5 seconds
-	time.AfterFunc(time.Second*5, func() {
-		println("Unsubscribing from /test/ping")
-		err := client.Unsubscribe(context.Background(), []string{
-			"/test/ping",
-		})
-		if err != nil {
-			log.Fatalln("Unsubscribe error:", err)
-		}
-	})
+	// Unsubscribe after 30 seconds
+	//time.AfterFunc(time.Second*30, func() {
+	//	println("Unsubscribing from /test/ping")
+	//	err := client.Unsubscribe(context.Background(), []string{
+	//		"/test/ping",
+	//	})
+	//	if err != nil {
+	//		log.Fatalln("Unsubscribe error:", err)
+	//	}
+	//})
 
-	// Loop forever
-	select {}
+	// QoS test: Close the conn to simulate an abrupt disconnect and restart.
+	timer := time.NewTimer(time.Second * 30)
+	select {
+	case <-timer.C:
+		// Close the conn and goto to the restart label
+		conn.Close()
+		goto restart
+	}
 }

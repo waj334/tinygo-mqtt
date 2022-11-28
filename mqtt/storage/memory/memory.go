@@ -95,6 +95,7 @@ func (s *Storage) Drop(identifier uint16) (err error) {
 		if e.id == identifier {
 			// Remove the entry by not including it in the re-slice domains.
 			s.store = append(s.store[:i], s.store[i+1:]...)
+			return
 		}
 	}
 
