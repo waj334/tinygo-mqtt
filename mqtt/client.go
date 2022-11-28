@@ -561,11 +561,55 @@ func (c *Client) Poll() (err error) {
 
 	// Read control packet
 	switch header.GetType() {
-	//case packets.PUBLISH:
-	//case packets.PUBACK:
-	//case packets.PUBREC:
-	//case packets.PUBREL:
-	//case packets.PUBCOMP:
+	case packets.PUBLISH:
+		publish := &packets.Publish{Header: header}
+		if _, err = publish.ReadFrom(c.conn); err != nil {
+			return
+		}
+
+		// TODO: Route the PUBLISH to the correct event channels as configured by the Subscribe API
+		// TODO: Perform persistence operations as required by the QoS level of this PUBLISH.
+
+		c.signal(packets.PUBLISH, publish)
+	case packets.PUBACK:
+		puback := &packets.Puback{Header: header}
+		if _, err = puback.ReadFrom(c.conn); err != nil {
+			return err
+		}
+
+		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
+
+		c.signal(packets.PUBACK, puback)
+	case packets.PUBREC:
+		pubrec := &packets.Pubrec{}
+		pubrec.Header = header
+		if _, err = pubrec.ReadFrom(c.conn); err != nil {
+			return err
+		}
+
+		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
+
+		c.signal(packets.PUBREC, pubrec)
+	case packets.PUBREL:
+		pubrel := &packets.Pubrel{}
+		pubrel.Header = header
+		if _, err = pubrel.ReadFrom(c.conn); err != nil {
+			return err
+		}
+
+		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
+
+		c.signal(packets.PUBREL, pubrel)
+	case packets.PUBCOMP:
+		pubcomp := &packets.Pubcomp{}
+		pubcomp.Header = header
+		if _, err = pubcomp.ReadFrom(c.conn); err != nil {
+			return err
+		}
+
+		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
+
+		c.signal(packets.PUBCOMP, pubcomp)
 	case packets.SUBACK:
 		suback := &packets.Suback{Header: header}
 		if _, err = suback.ReadFrom(c.conn); err != nil {

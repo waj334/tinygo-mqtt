@@ -39,7 +39,7 @@ func (p *PrimitiveString) WriteTo(w io.Writer) (n int64, err error) {
 	n += 2
 
 	// Write the string
-	count, err := io.WriteString(w, string(*p))
+	count, err := Write(w, []byte(*p))
 	if err != nil {
 		return 0, err
 	}
@@ -77,13 +77,11 @@ func (p *PrimitiveString) ReadFrom(r io.Reader) (n int64, err error) {
 	length := binary.BigEndian.Uint16(lenBuf)
 
 	// Allocate memory for the string
-	buf := make([]byte, length)
-	if _, err = Read(r, buf); err != nil {
+	*p = PrimitiveString(make([]byte, length))
+	if _, err = Read(r, []byte(*p)); err != nil {
 		return 0, err
 	}
 
-	// Assign the buf to the receiver and return
-	*p = PrimitiveString(buf)
 	return
 }
 
@@ -93,4 +91,8 @@ func (p *PrimitiveString) Length(property bool) (result VariableByteInt) {
 		result++
 	}
 	return
+}
+
+func (p *PrimitiveString) String() string {
+	return string(*p)
 }
