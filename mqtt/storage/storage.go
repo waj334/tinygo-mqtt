@@ -22,62 +22,22 @@
  * SOFTWARE.
  */
 
-package primitives
+package storage
 
-import (
-	"encoding/binary"
-	"io"
+import "errors"
+
+var (
+	ErrDuplicateEntry = errors.New("control packet with specified identifier is already present in persistent storage")
+	ErrNoEntry        = errors.New("no control with the specified identifier is present in persistent storage")
 )
 
-type PrimitiveUint16 uint16
+type Storage interface {
+	// Store stores the control packet to the persistent storage.
+	Store(identifier uint16, packet any) (err error)
 
-func (p *PrimitiveUint16) WriteTo(w io.Writer) (n int64, err error) {
-	// Write the length of the string
-	if err = WriteUint16(uint16(*p), w); err != nil {
-		return 0, err
-	}
-	n = 1
+	// Get returns the control packet with the specified packet identifier.
+	Get(identifier uint16) (pub any, err error)
 
-	return
-}
-
-func (p *PrimitiveUint16) WriteToAsProperty(identifier byte, w io.Writer) (n int64, err error) {
-	if err = WriteByte(identifier, w); err != nil {
-		return 0, err
-	}
-
-	if n, err = p.WriteTo(w); err != nil {
-		return 0, err
-	}
-
-	// Account for writing identifier byte
-	n++
-
-	return
-}
-
-func (p *PrimitiveUint16) ReadFrom(r io.Reader) (n int64, err error) {
-	buf := make([]byte, 2)
-
-	var count int
-	if count, err = Read(r, buf); err != nil {
-		return 0, err
-	} else if count != 2 {
-		return 0, io.ErrUnexpectedEOF
-	}
-
-	*p = PrimitiveUint16(binary.BigEndian.Uint16(buf))
-	return 2, nil
-}
-
-func (p *PrimitiveUint16) Length(property bool) (result VariableByteInt) {
-	result = 2
-	if property {
-		result++
-	}
-	return
-}
-
-func (p *PrimitiveUint16) Value() uint16 {
-	return uint16(*p)
+	// Drop removes the control packet with the specified identifier from persistent storage.
+	Drop(identifier uint16) (err error)
 }

@@ -74,3 +74,7 @@ func (p *PrimitiveByte) Length(property bool) (result VariableByteInt) {
 func (p *PrimitiveByte) Bool() bool {
 	return *p != 0
 }
+
+func (p *PrimitiveByte) Value() byte {
+	return byte(*p)
+}

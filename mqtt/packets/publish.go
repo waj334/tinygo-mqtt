@@ -25,6 +25,7 @@
 package packets
 
 import (
+	"context"
 	"io"
 
 	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
@@ -50,6 +51,9 @@ type Publish struct {
 	UserProperties         primitives.PrimitiveStringMap
 	SubscriptionIdentifier primitives.VariableByteInt
 	ContentType            primitives.PrimitiveString
+
+	/* Misc */
+	ackFn func(context.Context, *Publish) error
 }
 
 func (p *Publish) Write(buf []byte) (n int, err error) {
@@ -84,6 +88,14 @@ func (p *Publish) Reset() {
 
 func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
 	var count int64
+
+	// Read the header from the reader if it has not been initialized
+	if p.Header.GetType() == 0 {
+		if count, err = p.Header.ReadFrom(r); err != nil {
+			return
+		}
+		n += count
+	}
 
 	// Parse flags
 	p.Retain = (p.Header.GetFlags() & 0x01) != 0
@@ -340,6 +352,26 @@ func (p *Publish) WriteTo(w io.Writer) (n int64, err error) {
 		} else {
 			n += int64(count)
 		}
+	}
+
+	return
+}
+
+// SetAckFn sets the function to be called internally by the Ack method. This method should ONLY be called internally by
+// Client when this publish is received by its Poll method.
+func (p *Publish) SetAckFn(fn func(context.Context, *Publish) error) {
+	if p.ackFn == nil {
+		p.ackFn = fn
+	}
+}
+
+// Ack will send the PUBACK control packet to the server. This method is only active when this publish has been received
+// from the server and call only be called ONCE. Any subsequent calls to this method will do nothing and return no
+// error.
+func (p *Publish) Ack(ctx context.Context) (err error) {
+	if p.ackFn != nil {
+		err = p.ackFn(ctx, p)
+		p.ackFn = nil
 	}
 
 	return

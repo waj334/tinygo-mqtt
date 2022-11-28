@@ -77,3 +77,7 @@ func (p *PrimitiveUint32) Length(property bool) (result VariableByteInt) {
 	}
 	return
 }
+
+func (p *PrimitiveUint32) Value() uint32 {
+	return uint32(*p)
+}

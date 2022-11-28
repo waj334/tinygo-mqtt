@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
+	"github.com/waj334/tinygo-mqtt/mqtt/storage"
 	"net"
 	"os"
 	"sync"
@@ -39,6 +40,8 @@ import (
 type Client struct {
 	conn  net.Conn
 	mutex sync.Mutex
+
+	storage storage.Storage
 
 	isConnected           bool
 	keepAliveInterval     time.Duration
@@ -75,6 +78,16 @@ func NewClient(conn net.Conn) *Client {
 		evChanIdCounter: 1,
 		packetIdCounter: 1, // Must start at 1
 	}
+}
+
+// SetStorage sets the storage implementation that will be used to support the control packet persistence required for
+// QoS 1 and QoS 2. No persistence will take place if no storage implementation is set which cause message delivery
+// retry to be effectively disabled. No storage implementation is set by default.
+func (c *Client) SetStorage(storage storage.Storage) {
+	c.eventMutex.Lock()
+	defer c.eventMutex.Unlock()
+
+	c.storage = storage
 }
 
 // CreateEventChannel creates an event channel struct that the client will use to notify when events (connect,
@@ -516,12 +529,60 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 		return err
 	}
 
-	// TODO: Perform preflight packet persistence operations
+	// Perform preflight packet persistence operations
+	if c.storage != nil && pub.QoS > 0 {
+		// Assign a packet identifier if none is set
+		if pub.PacketIdentifier == 0 {
+			pub.PacketIdentifier = primitives.PrimitiveUint16(c.packetIdCounter)
+			c.packetIdCounter++
+		}
+
+		// Store this publish control packet
+		if err = c.storage.Store(uint16(pub.PacketIdentifier), pub); err != nil {
+			return err
+		}
+	}
 
 	// Write the publish
 	if _, err = pub.WriteTo(c.conn); err != nil {
 		return
 	}
+
+	return
+}
+
+// sendPuback will send the PUBACK control packet to the server. This API is only accessible via Publish when it is
+// RECEIVED from the server during the Poll method.
+func (c *Client) sendPuback(ctx context.Context, publish *packets.Publish) (err error) {
+	// The packet identifier MUST be set
+	if publish.PacketIdentifier == 0 {
+		return packets.ErrControlPacketIsMalformed
+	}
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	var deadline time.Time
+	var ok bool
+	if deadline, ok = ctx.Deadline(); !ok {
+		deadline = time.Time{}
+	}
+
+	// Set I/O deadline
+	if err = c.conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+
+	puback := &packets.Puback{
+		PacketIdentifier: publish.PacketIdentifier,
+	}
+
+	// Send the PUBACK control packet to the server
+	if _, err = puback.WriteTo(c.conn); err != nil {
+		return
+	}
+
+	// No response to wait for
 
 	return
 }
@@ -644,6 +705,11 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			return
 		}
 
+		// Set the acknowledgement function
+		if publish.QoS > 0 {
+			publish.SetAckFn(c.sendPuback)
+		}
+
 		// TODO: Route the PUBLISH to the correct event channels as configured by the Subscribe API
 		for filter, channel := range c.topicChans {
 			// Does the topic match any known filter?
@@ -662,7 +728,12 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			return err
 		}
 
-		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
+		// Drop any persisted publish with the same packet identifier
+		if c.storage != nil {
+			if err = c.storage.Drop(puback.PacketIdentifier.Value()); err != nil {
+				return
+			}
+		}
 
 		c.signal(packets.PUBACK, puback, nil)
 	case packets.PUBREC:
