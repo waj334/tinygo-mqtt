@@ -108,26 +108,35 @@ func main() {
 					log.Println("Publish error:", err)
 				}
 			case e := <-events.C:
-				switch e.PacketType {
-				case packets.CONNACK:
-					log.Println("MQTT client connected!")
-				case packets.DISCONNECT:
-					log.Println("MQTT client has been disconnected")
-				case packets.SUBACK:
-					log.Println("Subscribed to topic(s)")
-				case packets.PUBLISH:
-					pub := e.Data.(*packets.Publish)
-					log.Println("General channel received publish:", string(pub.Payload))
-					log.Println("Publish topic:", pub.Topic)
-				default:
-					println("Received packet:", e.PacketType)
+				if e != nil {
+					switch e.PacketType {
+					case packets.CONNACK:
+						log.Println("MQTT client connected!")
+					case packets.DISCONNECT:
+						log.Println("MQTT client has been disconnected")
+					case packets.SUBACK:
+						log.Println("Subscribed to topic(s)")
+					case packets.PUBLISH:
+						pub := e.Data.(*packets.Publish)
+						log.Println("General channel received publish:", string(pub.Payload))
+						log.Println("Publish topic:", pub.Topic)
+					default:
+						println("Received packet:", e.PacketType)
+					}
 				}
+			case <-topicEvents.Done:
+				log.Println("Topic channel has been closed")
+				log.Println("Client will remain connected")
+				topicEvents.C = nil // Make sure this channel is never selected again
+				topicEvents.Done = nil
 			case e := <-topicEvents.C:
-				switch e.PacketType {
-				case packets.PUBLISH:
-					pub := e.Data.(*packets.Publish)
-					log.Println("Topic channel received publish:", string(pub.Payload))
-					log.Println("Publish topic:", pub.Topic)
+				if e != nil {
+					switch e.PacketType {
+					case packets.PUBLISH:
+						pub := e.Data.(*packets.Publish)
+						log.Println("Topic channel received publish:", string(pub.Payload))
+						log.Println("Publish topic:", pub.Topic)
+					}
 				}
 			default:
 				// Set a deadline of 1 second for polling for incoming messages
@@ -157,6 +166,17 @@ func main() {
 	}); err != nil {
 		log.Fatalln("Subscribe error:", err)
 	}
+
+	// Unsubscribe after 5 seconds
+	time.AfterFunc(time.Second*5, func() {
+		println("Unsubscribing from /test/ping")
+		err := client.Unsubscribe(context.Background(), []string{
+			"/test/ping",
+		})
+		if err != nil {
+			log.Fatalln("Unsubscribe error:", err)
+		}
+	})
 
 	// Loop forever
 	select {}

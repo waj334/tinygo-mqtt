@@ -45,11 +45,6 @@ type Unsuback struct {
 func (u *Unsuback) ReadFrom(r io.Reader) (n int64, err error) {
 	var count int64
 
-	// Fail early if no memory was allocated for reason code storage
-	if len(u.ReasonCodes) == 0 {
-		return 0, ErrControlPacketIsMalformed
-	}
-
 	/* Variable header begin */
 	if n, err = u.PacketIdentifier.ReadFrom(r); err != nil {
 		return 0, err
@@ -116,6 +111,10 @@ func (u *Unsuback) ReadFrom(r io.Reader) (n int64, err error) {
 	// Read the reason codes
 	{
 		var count int
+
+		// Allocate memory for storing the reason codes
+		u.ReasonCodes = make([]byte, int64(u.Header.Remaining)-n)
+
 		if count, err = io.ReadFull(r, u.ReasonCodes); err != nil {
 			return 0, err
 		}

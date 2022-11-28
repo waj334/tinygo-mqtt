@@ -45,8 +45,8 @@ type Client struct {
 	pingRespDeadline      time.Time
 	sessionExpiryInterval uint32
 
-	eventChans map[int]chan<- *Event
-	topicChans map[string]chan<- *Event
+	eventChans map[int]EventChannel
+	topicChans map[string]EventChannel
 
 	responseChan map[int]chan any
 
@@ -69,8 +69,8 @@ func (t *Topic) SetEventChannel(channel EventChannel) *Topic {
 func NewClient(conn net.Conn) *Client {
 	return &Client{
 		conn:            conn,
-		eventChans:      make(map[int]chan<- *Event),
-		topicChans:      make(map[string]chan<- *Event),
+		eventChans:      make(map[int]EventChannel),
+		topicChans:      make(map[string]EventChannel),
 		responseChan:    make(map[int]chan any),
 		evChanIdCounter: 1,
 		packetIdCounter: 1, // Must start at 1
@@ -90,28 +90,47 @@ func (c *Client) CreateEventChannel(n int) EventChannel {
 
 	// Create a channel for consumers to be signalled on
 	channel := make(chan *Event, n)
+	done := make(chan struct{}, 1)
 
 	// Create the struct that will be returned to the caller
 	result := EventChannel{
-		C:  channel,
-		id: c.evChanIdCounter,
+		C:    channel,
+		Done: done,
+		id:   c.evChanIdCounter,
+
+		channel: channel,
+		done:    done,
 	}
 
 	// Track this chan so fanout signalling can occur later
-	c.eventChans[c.evChanIdCounter] = channel
+	c.eventChans[c.evChanIdCounter] = result
 	c.evChanIdCounter++
 
 	return result
 }
 
 // CloseEventChannel closes the event channel. No further events will be signalled on the channel.
-func (c *Client) CloseEventChannel(eventChan EventChannel) {
+func (c *Client) CloseEventChannel(channel EventChannel) {
 	c.eventMutex.Lock()
 	defer c.eventMutex.Unlock()
 
-	if channel, ok := c.eventChans[eventChan.id]; ok {
-		// Close the channel so that no further signals can occur on it
-		close(channel)
+	c.closeEventChannelInternal(channel)
+}
+
+func (c *Client) closeEventChannelInternal(channel EventChannel) {
+	// Close the channel so that no further signals can occur on it
+	close(channel.channel)
+
+	// Send the done signal and close the done channel
+	channel.done <- struct{}{}
+	close(channel.done)
+
+	// Remove channel from maps
+	delete(c.eventChans, channel.id)
+	for key, topicChan := range c.topicChans {
+		if topicChan.id == channel.id {
+			delete(c.topicChans, key)
+		}
 	}
 }
 
@@ -141,7 +160,7 @@ func (c *Client) signal(packetType packets.PacketType, data any, channel chan<- 
 		// Fanout to all other channels
 		for _, channel := range c.eventChans {
 			select {
-			case channel <- e:
+			case channel.channel <- e:
 				// Signalled
 			default:
 				// TODO: Decide whether or not to let this goroutine block. If this goroutine is allowed to block, then it
@@ -369,7 +388,7 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 	}
 	c.mutex.Unlock()
 
-	// Wait for the response
+	// Wait for the acknowledgement
 	select {
 	case resp := <-respChan:
 		suback := resp.(*packets.Suback)
@@ -415,7 +434,6 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 	}
 
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
 
 	if !c.isConnected {
 		return ErrClientNotConnected
@@ -447,14 +465,34 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 	}
 	c.packetIdCounter++
 
+	// Create channel to receive the response on
+	respChan := make(chan any, 1)
+	c.responseChan[int(unsubscribe.PacketIdentifier)] = respChan
+
 	// Send the UNSUBSCRIBE control packet
 	if _, err = unsubscribe.WriteTo(c.conn); err != nil {
 		return err
 	}
+	c.mutex.Unlock()
 
-	// TODO: Close event channels?
+	// Wait for the acknowledgement
+	select {
+	case <-respChan:
+		c.mutex.Lock()
+		// Close any event channels bound to the topics
+		for _, topic := range topics {
+			if channel, ok := c.topicChans[topic]; ok {
+				c.closeEventChannelInternal(channel)
+			}
+		}
+		c.mutex.Unlock()
+	}
 
-	// Waiting for the acknowledgement is unnecessary
+	c.mutex.Lock()
+	// Remove the channel from the map
+	delete(c.responseChan, int(unsubscribe.PacketIdentifier))
+	c.mutex.Unlock()
+
 	return
 }
 
@@ -611,7 +649,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			// Does the topic match any known filter?
 			if c.matchTopic(publish.Topic.String(), filter) {
 				// Signal the publish on this channel
-				c.signal(packets.PUBLISH, publish, channel)
+				c.signal(packets.PUBLISH, publish, channel.channel)
 			}
 		}
 
@@ -670,10 +708,16 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 
 		c.signal(packets.SUBACK, suback, nil)
 	case packets.UNSUBACK:
-		unsuback := &packets.Unsuback{}
+		unsuback := &packets.Unsuback{Header: header}
 		if _, err = unsuback.ReadFrom(c.conn); err != nil {
 			return
 		}
+
+		// Respond to the call to client.Unsubscribe
+		if respChan, ok := c.responseChan[int(unsuback.PacketIdentifier)]; ok {
+			respChan <- unsuback
+		}
+
 		c.signal(packets.UNSUBACK, unsuback, nil)
 	case packets.DISCONNECT:
 		disconnect := &packets.Disconnect{Header: header}

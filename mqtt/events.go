@@ -38,7 +38,10 @@ type Event struct {
 
 // EventChannel represents the channel on which the client will use to notify consumers of events.
 type EventChannel struct {
-	C <-chan *Event
+	C    <-chan *Event
+	Done <-chan struct{}
 
-	id int
+	id      int
+	channel chan *Event
+	done    chan struct{}
 }
