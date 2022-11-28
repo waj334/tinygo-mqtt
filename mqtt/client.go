@@ -39,7 +39,7 @@ import (
 
 type Client struct {
 	conn  net.Conn
-	mutex sync.Mutex
+	mutex sync.RWMutex
 
 	storage storage.Storage
 
@@ -47,6 +47,9 @@ type Client struct {
 	keepAliveInterval     time.Duration
 	pingRespDeadline      time.Time
 	sessionExpiryInterval uint32
+
+	clientReceiveMaximum uint16
+	serverReceiveMaximum uint16
 
 	eventChans map[int]EventChannel
 	topicChans map[string]EventChannel
@@ -57,6 +60,11 @@ type Client struct {
 	eventMutex      sync.Mutex
 
 	packetIdCounter int
+
+	sendQuota    uint16
+	receiveQuota uint16
+
+	pendingSendSemaphore chan struct{}
 }
 
 type Topic struct {
@@ -260,6 +268,23 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 		c.keepAliveInterval = time.Second * time.Duration(packet.KeepAlive)
 	}
 
+	// Store receive maximum reported by the connect packet and CONNACK received from the server
+	c.serverReceiveMaximum = connack.ReceiveMaximum.Value()
+
+	if packet.ReceiveMaximum == 0 {
+		// Default to that of the server
+		c.clientReceiveMaximum = c.serverReceiveMaximum
+	} else {
+		// Use the value from the connect control packet
+		c.clientReceiveMaximum = packet.ReceiveMaximum.Value()
+	}
+
+	// Initialize quotas
+	c.sendQuota = c.serverReceiveMaximum
+	c.receiveQuota = c.clientReceiveMaximum
+
+	c.pendingSendSemaphore = make(chan struct{}) //, c.sendQuota)
+
 	// Set the ping response deadline
 	c.pingRespDeadline = time.Now().Add(c.keepAliveInterval * 2)
 
@@ -353,14 +378,60 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 	return nil
 }
 
+func (c *Client) disconnectWithReason(ctx context.Context, reason primitives.PrimitiveByte) (err error) {
+	if c.isConnected {
+		return ErrClientNotConnected
+	}
+
+	var deadline time.Time
+	var ok bool
+	if deadline, ok = ctx.Deadline(); !ok {
+		deadline = time.Time{}
+	}
+
+	// Set I/O deadline
+	if err = c.conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+
+	disconnect := packets.Disconnect{
+		ReasonCode: reason,
+	}
+
+	// Only allow specifying the session expiry interval if it was set to a non-zero value in the CONNECT control
+	// packet.
+	// SPEC: If the Session Expiry Interval in the CONNECT packet was zero, then it is a Protocol Error to set a
+	//       non-zero Session Expiry Interval in the DISCONNECT packet sent by the Client.
+	//if c.sessionExpiryInterval != 0 {
+	//	disconnect.SessionExpiryInterval = primitives.PrimitiveUint32(sessionExpiryInterval)
+	//}
+
+	// Send the DISCONNECT packet to the server
+	if _, err = disconnect.WriteTo(c.conn); err != nil {
+		return
+	}
+
+	// Close the connection to the server
+	// SPEC: MUST NOT send any more MQTT Control Packets on that Network Connection [MQTT-3.14.4-1].
+	//       MUST close the Network Connection [MQTT-3.14.4-2].
+	if err = c.conn.Close(); err != nil {
+		return
+	}
+
+	c.isConnected = false
+
+	// Signal disconnect
+	c.signal(packets.DISCONNECT, &disconnect, nil)
+
+	return
+}
+
 // Subscribe sends the SUBSCRIBE control packet to the server with the specified topic filters and options.
 func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 	// Do nothing if topics list is empty
 	if len(topics) == 0 {
 		return ErrInvalidArgument
 	}
-
-	c.mutex.Lock()
 
 	if !c.isConnected {
 		return ErrClientNotConnected
@@ -381,6 +452,8 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 	for index := range topics {
 		_topics = append(_topics, topics[index].Topic)
 	}
+
+	c.mutex.Lock()
 	subscribe := packets.Subscribe{
 		PacketIdentifier: primitives.PrimitiveUint16(c.packetIdCounter),
 		Topics:           _topics,
@@ -397,6 +470,7 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 
 	// Send the SUBSCRIBE control packet
 	if _, err = subscribe.WriteTo(c.conn); err != nil {
+		c.mutex.Unlock()
 		return err
 	}
 	c.mutex.Unlock()
@@ -511,9 +585,6 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 
 // Publish sends PUBLISH control packet to the server.
 func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
 	if !c.isConnected {
 		return ErrClientNotConnected
 	}
@@ -532,6 +603,7 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 	// Perform preflight packet persistence operations
 	if pub.QoS > 0 {
 		// Assign a packet identifier if none is set
+		c.mutex.Lock()
 		if pub.PacketIdentifier == 0 {
 			pub.PacketIdentifier = primitives.PrimitiveUint16(c.packetIdCounter)
 			c.packetIdCounter++
@@ -543,11 +615,30 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 				return err
 			}
 		}
+		c.mutex.Unlock()
 	}
 
+	// SPEC: Each time the Client or Server sends a PUBLISH packet at QoS > 0, it decrements the send quota. If the send
+	//       quota reaches zero, the Client or Server MUST NOT send any more PUBLISH packets with QoS > 0
+	//       [MQTT-4.9.0-2].
+	//
+	//       It MAY continue to send PUBLISH packets with QoS 0, or it MAY choose to suspend sending these as well. The
+	//       Client and Server MUST continue to process and respond to all other MQTT Control Packets even if the quota
+	//       is zero [MQTT-4.9.0-3].
+	if c.sendQuota == 0 && pub.QoS > 0 {
+		// Delay sending this publish until one of the unacknowledged publishes is acknowledged
+		c.pendingSendSemaphore <- struct{}{}
+	}
 	// Write the publish
 	if _, err = pub.WriteTo(c.conn); err != nil {
 		return
+	}
+
+	if pub.QoS > 0 {
+		c.mutex.Lock()
+		// Decrement the send quota counter
+		c.sendQuota--
+		c.mutex.Unlock()
 	}
 
 	return
@@ -560,9 +651,6 @@ func (c *Client) sendPuback(ctx context.Context, publish *packets.Publish) (err 
 	if publish.PacketIdentifier == 0 {
 		return packets.ErrControlPacketIsMalformed
 	}
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
 
 	var deadline time.Time
 	var ok bool
@@ -579,10 +667,18 @@ func (c *Client) sendPuback(ctx context.Context, publish *packets.Publish) (err 
 		PacketIdentifier: publish.PacketIdentifier,
 	}
 
+	c.mutex.RLock()
 	// Send the PUBACK control packet to the server
 	if _, err = puback.WriteTo(c.conn); err != nil {
+		c.mutex.RUnlock()
 		return
 	}
+	c.mutex.RUnlock()
+
+	// Increment the receive quota counter so that more publishes (QoS > 0) can be received
+	c.mutex.Lock()
+	c.receiveQuota++
+	c.mutex.Unlock()
 
 	// No response to wait for
 
@@ -602,8 +698,8 @@ func (c *Client) KeepAliveInterval() time.Duration {
 //
 //	PINGREQ packet. [MQTT-3.1.2-20]
 func (c *Client) KeepAlive() (err error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
 
 	if !c.isConnected {
 		return ErrClientNotConnected
@@ -640,7 +736,9 @@ func (c *Client) KeepAlive() (err error) {
 }
 
 // Poll polls for incoming control packets from the server. Incoming messages will be pushed to the back of the message
-// queue and a single message at the front of the queue will be processed. This function should be called repeatedly.
+// queue and a single message at the front of the queue will be processed. This function should be called repeatedly. No
+// call to the Publish method should take place on the same goroutine that a call to Poll takes place on as this could
+// potentially cause a deadlock.
 func (c *Client) Poll(ctx context.Context) (err error) {
 	if !c.isConnected {
 		return ErrClientNotConnected
@@ -707,6 +805,24 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			return
 		}
 
+		c.mutex.Lock()
+		if c.receiveQuota == 0 && publish.QoS > 0 {
+			// The server has sent more publishes than this client is willing to accept. Send disconnect.
+			// SPEC: The Server MUST NOT send more than Receive Maximum QoS 1 and QoS 2 PUBLISH packets for which it has
+			//       not received PUBACK, PUBCOMP, or PUBREC with a Reason Code of 128 or greater from the Client
+			//       [MQTT-3.3.4-9]. If it receives more than Receive Maximum QoS 1 and QoS 2 PUBLISH packets where it
+			//       has not sent a PUBACK or PUBCOMP in response, the Client uses DISCONNECT with Reason Code 0x93
+			//       (Receive Maximum exceeded) as described in section 4.13 Handling errors.
+			if err = c.disconnectWithReason(ctx, 0x93); err != nil {
+				c.mutex.Unlock()
+				return err
+			}
+		} else {
+			// Decrement the receive quota counter
+			c.receiveQuota--
+		}
+		c.mutex.Unlock()
+
 		// Set the acknowledgement function
 		if publish.QoS > 0 {
 			publish.SetAckFn(c.sendPuback)
@@ -729,6 +845,21 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 		if _, err = puback.ReadFrom(c.conn); err != nil {
 			return err
 		}
+
+		// Perform rate limiting related operations
+		c.mutex.Lock()
+		if c.sendQuota < c.serverReceiveMaximum {
+			// Increment the sent publish counter
+			c.sendQuota++
+
+			// Potentially allow a blocked call to Publish to continue.
+			// NOTE: This is the reason why calls to Publish and Poll should not occur within the same goroutine.
+			select {
+			case <-c.pendingSendSemaphore: // Unblock a pending call to Publish
+			default: // No call to Publish is pending
+			}
+		}
+		c.mutex.Unlock()
 
 		// Drop any persisted publish with the same packet identifier
 		if c.storage != nil {
@@ -764,6 +895,18 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 		if _, err = pubcomp.ReadFrom(c.conn); err != nil {
 			return err
 		}
+
+		// Perform rate limiting related operations
+		c.mutex.Lock()
+		if c.sendQuota < c.serverReceiveMaximum {
+			// Increment the sent publish counter
+			c.sendQuota++
+
+			// Potentially allow a blocked call to Publish to continue.
+			// NOTE: This is the reason why calls to Publish and Poll should not occur within the same goroutine.
+			c.pendingSendSemaphore <- struct{}{}
+		}
+		c.mutex.Unlock()
 
 		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
 

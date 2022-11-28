@@ -27,18 +27,20 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/waj334/tinygo-mqtt/mqtt"
-	"github.com/waj334/tinygo-mqtt/mqtt/packets"
-	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
-	"github.com/waj334/tinygo-mqtt/mqtt/storage/memory"
 	"log"
 	"math/rand"
 	"net"
 	"time"
+
+	"github.com/waj334/tinygo-mqtt/mqtt"
+	"github.com/waj334/tinygo-mqtt/mqtt/packets"
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
+	"github.com/waj334/tinygo-mqtt/mqtt/storage/memory"
 )
 
 func main() {
 	// Generate random client id
+	rand.Seed(time.Now().UnixNano())
 	clientId := fmt.Sprintf("super-secret-test-client-%d", rand.Int63())
 
 	// Set up a connection packet
@@ -53,7 +55,7 @@ func main() {
 		CleanSession:               false,
 		KeepAlive:                  30,
 		SessionExpiryInterval:      primitives.PrimitiveUint32((time.Minute * 5).Minutes()),
-		ReceiveMaximum:             0,
+		ReceiveMaximum:             5,
 		MaximumPacketSize:          0,
 		TopicAliasMaximum:          0,
 		RequestResponseInformation: 0,
@@ -89,33 +91,63 @@ restart:
 		log.Fatalln(err)
 	}
 
-	// Create an additional event channel receive only the events for the subscription
-	topicEvents := client.CreateEventChannel(10)
+	donePolling := make(chan struct{}, 1)
 
-	// Start event processing
-	go func() {
+	// Begin polling
+	go func(done <-chan struct{}) {
 		// Use ticker to send periodic keep-alive control packets
 		ticker := time.NewTicker(client.KeepAliveInterval())
-		ticker2 := time.NewTicker(time.Second)
-		ticker2.Stop()
 
 		for {
 			select {
+			case <-done:
+				return
 			case <-ticker.C:
 				if err := client.KeepAlive(); err != nil {
 					log.Println("Keep Alive Error:", err)
 					return
 				}
-			case <-ticker2.C:
-				// Publish a message
-				if err = client.Publish(context.Background(), packets.Publish{
-					Retain:  false,
-					QoS:     packets.QoS1,
-					Topic:   "/test/ping",
-					Payload: []byte("pong"),
-				}); err != nil {
-					log.Println("Publish error:", err)
+			default:
+				// Set a deadline of 1 second for polling for incoming messages
+				ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+
+				// Poll for incoming messages
+				if err := client.Poll(ctx); err != nil {
+					cancel()
+					log.Printf("Poll error: %v\n", err)
+					return
 				}
+				cancel()
+			}
+		}
+	}(donePolling)
+
+	// Create an additional event channel receive only the events for the subscription
+	topicEvents := client.CreateEventChannel(10)
+
+	// Start event processing
+	go func() {
+		// Periodically send a publish to be consumed
+		publishTicker := time.NewTicker(time.Millisecond * 10)
+		publishTicker.Stop()
+
+		for {
+			select {
+			case <-publishTicker.C:
+				// Publish a random number of messages all at once
+				for i := 0; i < rand.Intn(75); i++ {
+					if err = client.Publish(context.Background(), packets.Publish{
+						Retain:  false,
+						QoS:     packets.QoS1,
+						Topic:   "/test/ping",
+						Payload: []byte("pong"),
+					}); err != nil {
+						log.Println("Publish error:", err)
+					}
+				}
+			case <-events.Done:
+				log.Println("General event channel closed")
+				return
 			case e := <-events.C:
 				if e != nil {
 					switch e.PacketType {
@@ -135,7 +167,7 @@ restart:
 						log.Printf("MQTT client has been disconnected: %2x %v", disconnect.ReasonCode, mqtt.ReasonCode(disconnect.ReasonCode))
 					case packets.SUBACK:
 						log.Println("Subscribed to topic(s)")
-						ticker2.Reset(time.Second)
+						publishTicker.Reset(time.Second)
 					case packets.PUBLISH:
 						pub := e.Data.(*packets.Publish)
 						log.Println("General channel received publish:", string(pub.Payload))
@@ -157,25 +189,25 @@ restart:
 						log.Println("Topic channel received publish:", string(pub.Payload))
 						log.Println("Publish topic:", pub.Topic)
 
+						// Acknowledge duplicate packets that the server has resent.
 						if pub.Duplicate {
 							log.Println("Publish is duplicate. Acknowledging it")
 							if err := pub.Ack(context.Background()); err != nil {
 								log.Println("Ack error: err")
 							}
+						} else {
+							// Test rate limiting: Acknowledge some incoming publishes. The server should stop sending when
+							//                     the client has not acknowledged too many incoming publishes.
+							now := time.Now().Unix()
+							if now%2 == 0 || now%3 == 0 || now%4 == 0 {
+								log.Println("Acknowledging random packet")
+								if err := pub.Ack(context.Background()); err != nil {
+									log.Println("Ack error: err")
+								}
+							}
 						}
 					}
 				}
-			default:
-				// Set a deadline of 1 second for polling for incoming messages
-				ctx, cancel = context.WithTimeout(context.Background(), time.Second)
-
-				// Poll for incoming messages
-				if err := client.Poll(ctx); err != nil {
-					cancel()
-					log.Printf("Poll error: %v\n", err)
-					return
-				}
-				cancel()
 			}
 		}
 	}()
@@ -212,7 +244,13 @@ restart:
 	select {
 	case <-timer.C:
 		// Close the conn and goto to the restart label
+		donePolling <- struct{}{}
 		conn.Close()
+
+		// Close the event channel
+		client.CloseEventChannel(events)
+		client.CloseEventChannel(topicEvents)
+
 		goto restart
 	}
 }
