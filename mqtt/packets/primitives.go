@@ -30,61 +30,24 @@ import (
 	"unsafe"
 )
 
-type Topic struct {
-	filter  string
-	options byte
+// NOTE: Borrowed from strings.Builder implementation. This is meant to avoid escape analysis when using Reader/Writer
+// interfaces.
+//
+//go:nosplit
+func noescape(p unsafe.Pointer) unsafe.Pointer {
+	x := uintptr(p)
+	return unsafe.Pointer(x ^ 0)
 }
 
-func (t *Topic) SetQoS(qos QoS) *Topic {
-	// Set bits [1 - 0]
-	t.options &= ^byte(1 << 0)
-	t.options &= ^byte(1 << 1)
-	t.options |= byte(qos)
-	return t
+func Read(r io.Reader, b []byte) (int, error) {
+	return r.Read(*(*[]byte)(noescape(unsafe.Pointer(&b))))
 }
 
-func (t *Topic) Filter() string {
-	return t.filter
+func Write(w io.Writer, b []byte) (int, error) {
+	return w.Write(*(*[]byte)(noescape(unsafe.Pointer(&b))))
 }
 
-func (t *Topic) SetFilter(filter string) *Topic {
-	if len(t.filter) >= 6 && t.filter[:6] == "$share" {
-		// Unset no local option
-		// SPEC: It is a Protocol Error to set the No Local bit to 1 on a Shared Subscription [MQTT-3.8.3-4]
-		t.SetNoLocal(false)
-	}
-	t.filter = filter
-	return t
-}
-
-func (t *Topic) SetNoLocal(on bool) *Topic {
-	// Set bit 2
-	t.options &= ^byte(1 << 2)
-
-	// Leave bit unset if this is a shared subscription
-	// SPEC: It is a Protocol Error to set the No Local bit to 1 on a Shared Subscription [MQTT-3.8.3-4]
-	if on && t.filter[:6] != "$share" {
-		t.options |= byte(1 << 2)
-	}
-	return t
-}
-
-func (t *Topic) SetRetainAsPublished(on bool) *Topic {
-	// Set bit 3
-	t.options &= ^byte(1 << 3)
-	if on {
-		t.options |= byte(1 << 3)
-	}
-	return t
-}
-
-func (t *Topic) SetRetainHandling(handling RetainHandlingOption) *Topic {
-	// Set bits [5 - 4]
-	t.options &= ^byte(1 << 5)
-	t.options &= ^byte(1 << 4)
-	t.options |= byte(handling << 4)
-	return t
-}
+////////////////////////////////////////////////////////////
 
 type VariableByteInt uint32
 
@@ -127,7 +90,7 @@ func (val *VariableByteInt) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 
-	n, err := w.Write(output)
+	n, err := Write(w, output)
 	if err != nil {
 		return 0, err
 	}
@@ -191,13 +154,13 @@ func WriteStringTo(val string, w io.Writer) (n int, err error) {
 
 //go:inline
 func WriteByte(b byte, w io.Writer) error {
-	_, err := w.Write(unsafe.Slice(&b, 1))
+	_, err := Write(w, unsafe.Slice(&b, 1))
 	return err
 }
 
 //go:inline
 func ReadByte(r io.Reader) (b byte, err error) {
-	_, err = r.Read(unsafe.Slice(&b, 1))
+	_, err = Read(r, unsafe.Slice(&b, 1))
 	return
 }
 
@@ -205,7 +168,7 @@ func ReadByte(r io.Reader) (b byte, err error) {
 func WriteUint16(val uint16, w io.Writer) (err error) {
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(&val)), 2)
 	binary.BigEndian.PutUint16(buf, val)
-	_, err = w.Write(buf)
+	_, err = Write(w, buf)
 	return
 }
 
@@ -213,7 +176,7 @@ func WriteUint16(val uint16, w io.Writer) (err error) {
 func WriteUint32(val uint32, w io.Writer) (err error) {
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(&val)), 4)
 	binary.BigEndian.PutUint32(buf, val)
-	_, err = w.Write(buf)
+	_, err = Write(w, buf)
 	return
 }
 
@@ -234,7 +197,7 @@ func WriteBytesProperty(identifier byte, val []byte, w io.Writer) (err error) {
 	if err = WriteUint16(uint16(len(val)), w); err != nil {
 		return err
 	}
-	if _, err = w.Write(val); err != nil {
+	if _, err = Write(w, val); err != nil {
 		return
 	}
 	return nil
@@ -247,7 +210,7 @@ func WriteByteProperty(identifier byte, val byte, w io.Writer) (err error) {
 	if err = WriteByte(val, w); err != nil {
 		return
 	}
-	_, err = w.Write([]byte{identifier, val})
+	_, err = Write(w, []byte{identifier, val})
 	return
 }
 

@@ -587,8 +587,12 @@ func (c *Client) Poll() (err error) {
 			return
 		}
 		c.signal(packets.DISCONNECT, disconnect)
-	//case packets.AUTH:
-
+	case packets.AUTH:
+		auth := &packets.Auth{Header: header}
+		if _, err = auth.ReadFrom(c.conn); err != nil {
+			return
+		}
+		c.signal(packets.AUTH, auth)
 	default: // TODO Remove this case
 		c.conn.Read(make([]byte, header.Remaining))
 	}

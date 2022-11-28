@@ -119,7 +119,7 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 			remaining -= 1
 		case 0x25: // Retain Available
 			var on byte
-			if err = binary.Read(r, binary.BigEndian, &on); err != nil {
+			if on, err = ReadByte(r); err != nil {
 				return 0, err
 			}
 			remaining -= 1
@@ -160,21 +160,21 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 			remaining -= 4 + len(k) + len(v)
 		case 0x28: // Wildcard Subscription Available
 			var on byte
-			if err = binary.Read(r, binary.BigEndian, &on); err != nil {
+			if on, err = ReadByte(r); err != nil {
 				return 0, err
 			}
 			remaining -= 1
 			c.WildcardSubscriptions = on != 0
 		case 0x29: // Subscription Identifiers Available
 			var on byte
-			if err = binary.Read(r, binary.BigEndian, &on); err != nil {
+			if on, err = ReadByte(r); err != nil {
 				return 0, err
 			}
 			remaining -= 1
 			c.SubscriptionIdentifiers = on != 0
 		case 0x2A: // Shared Subscription Available
 			var on byte
-			if err = binary.Read(r, binary.BigEndian, &on); err != nil {
+			if on, err = ReadByte(r); err != nil {
 				return 0, err
 			}
 			remaining -= 1

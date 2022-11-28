@@ -78,23 +78,18 @@ func (u *Unsubscribe) WriteTo(w io.Writer) (n int64, err error) {
 	//       [MQTT-3.10.1-1].
 	fh.SetFlags(0x02)
 
-	count := 0
 	if n, err = fh.WriteTo(w); err != nil {
 		return 0, err
 	}
+
 	// Write packet identifier
 	if err = WriteUint16(u.PacketIdentifier, w); err != nil {
 		return 0, err
 	}
-	n += 2
 
 	/* Properties begin */
-	{
-		var count int64
-		if count, err = propertiesLen.WriteTo(w); err != nil {
-			return 0, err
-		}
-		n += count
+	if _, err = propertiesLen.WriteTo(w); err != nil {
+		return 0, err
 	}
 
 	// Write user properties
@@ -102,26 +97,22 @@ func (u *Unsubscribe) WriteTo(w io.Writer) (n int64, err error) {
 		if err = WriteByte(0x26, w); err != nil {
 			return 0, err
 		}
-		n++
 
-		if count, err = WriteStringTo(k, w); err != nil {
+		if _, err = WriteStringTo(k, w); err != nil {
 			return 0, err
 		}
-		n += int64(count)
 
-		if count, err = WriteStringTo(v, w); err != nil {
+		if _, err = WriteStringTo(v, w); err != nil {
 			return 0, err
 		}
-		n += int64(count)
 	}
 	/* Properties end */
 
 	/* Payload begin */
 	for _, topic := range u.Topics {
-		if count, err = WriteStringTo(topic.filter, w); err != nil {
+		if _, err = WriteStringTo(topic.filter, w); err != nil {
 			return 0, err
 		}
-		n += int64(count)
 	}
 	/* Payload end */
 
