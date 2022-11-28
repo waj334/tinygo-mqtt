@@ -1,3 +1,27 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2022-2022 waj334
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 package mqtt
 
 import (
@@ -14,8 +38,9 @@ type Client struct {
 	conn  net.Conn
 	mutex sync.Mutex
 
-	isConnected       bool
-	keepAliveInterval time.Duration
+	isConnected           bool
+	keepAliveInterval     time.Duration
+	sessionExpiryInterval uint32
 }
 
 func NewClient(conn net.Conn) *Client {
@@ -96,6 +121,12 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 		c.keepAliveInterval = time.Second * time.Duration(packet.KeepAlive)
 	}
 
+	// Need to keep what the value of session expiry interval was in order to ensure the DISCONNECT control packet is
+	// set up correctly later.
+	// SPEC: If the Session Expiry Interval in the CONNECT packet was zero, then it is a Protocol Error to set a
+	//       non-zero Session Expiry Interval in the DISCONNECT packet sent by the Client.
+	c.sessionExpiryInterval = packet.SessionExpiryInterval
+
 	// Successful connection!
 	c.isConnected = true
 
@@ -105,8 +136,19 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 
 // Disconnect sends the DISCONNECT packet to the server. The network connection will be closed upon sending the
 // DISCONNECT packet. Setting the publishWill parameter to true will require the server to publish the "Will" message if
-// one was specified initially in the CONNECT packet.
+// one was specified initially in the CONNECT packet. The server will default session expiry interval to that of the
+// CONNECT control packet.
 func (c *Client) Disconnect(ctx context.Context, publishWill bool) (err error) {
+	return c.DisconnectWithSessionExpiry(ctx, publishWill, 0)
+}
+
+// DisconnectWithSessionExpiry sends the DISCONNECT packet to the server. The network connection will be closed upon
+// sending the DISCONNECT packet. Setting the publishWill parameter to true will require the server to publish the
+// "Will" message if one was specified initially in the CONNECT packet. The sessionExpiryInterval specifies the duration
+// that server should maintain its MQTT session state for this client after it disconnects for an extended period of
+// time. Setting a zero value for the sessionExpiryInterval parameter will cause the server to default to the value
+// specified in the CONNECT control packet.
+func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bool, sessionExpiryInterval int) (err error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -131,6 +173,14 @@ func (c *Client) Disconnect(ctx context.Context, publishWill bool) (err error) {
 		// Set the reason code to 0x04
 		// SPEC: The Client wishes to disconnect but requires that the Server also publishes its Will Message.
 		disconnect.ReasonCode = 0x04
+	}
+
+	// Only allow specifying the session expiry interval if it was set to a non-zero value in the CONNECT control
+	// packet.
+	// SPEC: If the Session Expiry Interval in the CONNECT packet was zero, then it is a Protocol Error to set a
+	//       non-zero Session Expiry Interval in the DISCONNECT packet sent by the Client.
+	if c.sessionExpiryInterval != 0 {
+		disconnect.SessionExpiryInterval = uint32(sessionExpiryInterval)
 	}
 
 	// Send the DISCONNECT packet to the server
@@ -158,8 +208,9 @@ func (c *Client) KeepAliveInterval() time.Duration {
 	return c.keepAliveInterval
 }
 
-// KeepAlive sends the PINGREQ packet to the server and then waits for the PINGRESP packet to be received. An error will
-// be returned if any packet other than PINGRESP is received by the client or the transmission timed out.
+// KeepAlive sends the PINGREQ control packet to the server and then waits for the PINGRESP packet to be received.
+// An error will be returned if any control packet other than PINGRESP is received by the client or the transmission
+// timed out.
 // SPEC: If Keep Alive is non-zero and in the absence of sending any other MQTT Control Packets, the Client MUST send a
 //
 //	PINGREQ packet. [MQTT-3.1.2-20]
@@ -189,7 +240,7 @@ func (c *Client) KeepAlive() (err error) {
 		return err
 	}
 
-	// Send the PINGREQ packet
+	// Send the PINGREQ control packet
 	header := packets.FixedHeader{}
 	header.SetType(packets.PINGREQ)
 	if _, err = header.WriteTo(c.conn); err != nil {
@@ -201,6 +252,7 @@ func (c *Client) KeepAlive() (err error) {
 		return err
 	}); errors.Is(err, os.ErrDeadlineExceeded) {
 		// Likely disconnected from server. Close the connection.
+		// SPEC: [MQTT-3.1.2-22]
 		c.isConnected = false
 		if err := c.conn.Close(); err != nil {
 			return err
