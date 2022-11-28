@@ -27,11 +27,12 @@ package mqtt
 import (
 	"context"
 	"errors"
-	"github.com/waj334/tinygo-mqtt/mqtt/packets"
 	"net"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/waj334/tinygo-mqtt/mqtt/packets"
 )
 
 type Client struct {
@@ -42,27 +43,47 @@ type Client struct {
 	keepAliveInterval     time.Duration
 	sessionExpiryInterval uint32
 
-	eventChans      map[int]chan<- Event
+	eventChans      map[int]chan<- *Event
+	topicChans      map[string]chan<- *Event
 	evChanIdCounter int
 	eventMutex      sync.Mutex
+
+	packetIdCounter int
+}
+
+type Topic struct {
+	packets.Topic
+	channel EventChannel
+}
+
+func (t *Topic) SetEventChannel(channel EventChannel) *Topic {
+	t.channel = channel
+	return t
 }
 
 func NewClient(conn net.Conn) *Client {
 	return &Client{
-		conn:       conn,
-		eventChans: make(map[int]chan<- Event),
+		conn:            conn,
+		eventChans:      make(map[int]chan<- *Event),
+		topicChans:      make(map[string]chan<- *Event),
+		evChanIdCounter: 1,
+		packetIdCounter: 1, // Must start at 1
 	}
 }
 
 // CreateEventChannel creates an event channel struct that the client will use to notify when events (connect,
-// disconnect, publish, subscribe, etc...) occur. Consumers must consume a pending event before any incoming events can
-// be received. Prior events will not be signalled on the new channel.
-func (c *Client) CreateEventChannel() EventChannel {
+// disconnect, publish, subscribe, etc...) occur. /Consumers must consume a pending event before any incoming events can
+// be received./ Prior events will not be signalled on the new channel.
+func (c *Client) CreateEventChannel(n int) EventChannel {
 	c.eventMutex.Lock()
 	defer c.eventMutex.Unlock()
 
+	if n <= 0 {
+		n = 1
+	}
+
 	// Create a channel for consumers to be signalled on
-	channel := make(chan Event, 1)
+	channel := make(chan *Event, n)
 
 	// Create the struct that will be returned to the caller
 	result := EventChannel{
@@ -94,7 +115,7 @@ func (c *Client) signal(packetType packets.PacketType, data any) {
 	c.eventMutex.Lock()
 	defer c.eventMutex.Unlock()
 
-	e := Event{
+	e := &Event{
 		PacketType: packetType,
 		Data:       data,
 	}
@@ -105,9 +126,15 @@ func (c *Client) signal(packetType packets.PacketType, data any) {
 		case channel <- e:
 			// Signalled
 		default:
+			// TODO: Decide whether or not to let this goroutine block. If this goroutine is allowed to block, then it
+			//       will be required that no event channel goes unconsumed. Otherwise, the tradeoff would be unconsumed
+			//       event channels will stop receiving new events when they are full.
 			// Already has a pending event. This channel will miss the current event
 		}
 	}
+
+	// Sleep this goroutine to allow other goroutines to consume their event channels
+	time.Sleep(time.Nanosecond)
 }
 
 // Connect sends the CONNECT packet to the server and waits for the server to send the acknowledgement (CONNACK) packet
@@ -192,7 +219,7 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	c.isConnected = true
 
 	// Signal CONNACK event
-	c.signal(packets.CONNACK, connack)
+	c.signal(packets.CONNACK, &connack)
 
 	return
 }
@@ -261,9 +288,176 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 	c.isConnected = false
 
 	// Signal disconnect
-	c.signal(packets.DISCONNECT, disconnect)
+	c.signal(packets.DISCONNECT, &disconnect)
 
 	return nil
+}
+
+// Subscribe sends the SUBSCRIBE control packet to the server with the specified topic filters and options.
+func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
+	// Do nothing if topics list is empty
+	if len(topics) == 0 {
+		return ErrInvalidArgument
+	}
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !c.isConnected {
+		return ErrClientNotConnected
+	}
+
+	var deadline time.Time
+	var ok bool
+	if deadline, ok = ctx.Deadline(); !ok {
+		deadline = time.Time{}
+	}
+
+	// Set I/O deadline
+	if err = c.conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+
+	var _topics []packets.Topic
+	for index := range topics {
+		_topics = append(_topics, topics[index].Topic)
+	}
+	subscribe := packets.Subscribe{
+		PacketIdentifier: uint16(c.packetIdCounter),
+		Topics:           _topics,
+
+		// TODO: Use context to set these optional parameters
+		//SubscriptionIdentifier: 0,
+		//UserProperties:         nil,
+	}
+	c.packetIdCounter++
+
+	// Send the SUBSCRIBE control packet
+	if _, err = subscribe.WriteTo(c.conn); err != nil {
+		return err
+	}
+
+response:
+	// Receive response header
+	header := packets.FixedHeader{}
+	if err = backoff(ctx, func() error {
+		_, err := header.ReadFrom(c.conn)
+		return err
+	}); err != nil {
+		return
+	}
+
+	// The possible responses are SUBACK, PUBLISH or DISCONNECT
+	switch header.GetType() {
+	case packets.DISCONNECT:
+		var disconnect packets.Disconnect
+		if _, err = disconnect.ReadFrom(c.conn); err != nil {
+			return err
+		}
+
+		// Close the connection
+		c.conn.Close()
+
+		// signal event channels
+		c.signal(packets.DISCONNECT, &disconnect)
+		return ReasonCode(disconnect.ReasonCode)
+	case packets.SUBACK:
+		// Create the SUBACK packet
+		suback := packets.Suback{
+			Header:      header,
+			ReasonCodes: make([]byte, len(topics)),
+		}
+		// Begin reading the SUBACK response
+		if err = backoff(ctx, func() error {
+			_, err := suback.ReadFrom(c.conn)
+			return err
+		}); err != nil {
+			return
+		}
+
+		// Check all reason codes
+		for i, code := range suback.ReasonCodes {
+			if code >= 0x80 {
+				// TODO: Return all failure reason codes to caller somehow
+				return ReasonCode(code)
+			} else {
+				// TODO: Consider session retention details here
+
+				if chanid := topics[i].channel.id; chanid != 0 {
+					// Map the event channel to the topic
+					// TODO: Should probably remove this channel from the original map
+					c.topicChans[topics[i].Topic.Filter()] = c.eventChans[chanid]
+				}
+			}
+		}
+
+		// signal event channels
+		c.signal(packets.SUBACK, &suback)
+	case packets.PUBLISH:
+		// TODO: Process the publish. Remove the line below
+		c.conn.Read(make([]byte, header.Remaining))
+
+		// SPEC: The Server is permitted to start sending PUBLISH packets matching the Subscription before the
+		//       Server sends the SUBACK packet.
+
+		// signal event channels
+		//c.signal(packets.PUBLISH, publish)
+		goto response
+	default:
+		return ErrUnexpectedPacketTypeReceived
+	}
+
+	return
+}
+
+// Unsubscribe sends the UNSUBSCRIBE control packet to the server with the specified topic filters. Any event channels
+// bound to topics specified by the topics parameter will not receive any further publishes from said topics.
+func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
+	// Do nothing if topics list is empty
+	if len(topics) == 0 {
+		return ErrInvalidArgument
+	}
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !c.isConnected {
+		return ErrClientNotConnected
+	}
+
+	var deadline time.Time
+	var ok bool
+	if deadline, ok = ctx.Deadline(); !ok {
+		deadline = time.Time{}
+	}
+
+	// Set I/O deadline
+	if err = c.conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+
+	var _topics []packets.Topic
+	for index := range topics {
+		t := packets.Topic{}
+		t.SetFilter(topics[index])
+		_topics = append(_topics, t)
+	}
+	unsubscribe := packets.Unsubscribe{
+		PacketIdentifier: uint16(c.packetIdCounter),
+		Topics:           _topics,
+
+		// TODO: Use context to set these optional parameters
+		//UserProperties:         nil,
+	}
+	c.packetIdCounter++
+
+	// Send the UNSUBSCRIBE control packet
+	if _, err = unsubscribe.WriteTo(c.conn); err != nil {
+		return err
+	}
+
+	// Waiting for the acknowledgement is unnecessary
+	return
 }
 
 // KeepAliveInterval returns the interval at which frequent PINGREQ packets must be sent. The server may specify a
@@ -331,9 +525,75 @@ func (c *Client) KeepAlive() (err error) {
 		return
 	}
 
-	if header.GetType() != packets.PINGRESP {
+	if t := header.GetType(); t != packets.PINGRESP {
 		return ErrUnexpectedPacketTypeReceived
 	}
 
 	return
+}
+
+// Poll polls for incoming control packets from the server. Incoming messages will be pushed to the back of the message
+// queue and a single message at the front of the queue will be processed. This function should be called repeatedly.
+func (c *Client) Poll() (err error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// Set I/O deadline to 10ms initially so that polling doesn't tie up the conn for too long
+	if err = c.conn.SetDeadline(time.Now().Add(time.Millisecond * 10)); err != nil {
+		return
+	}
+
+	// Attempt to receive a control packet header
+	header := packets.FixedHeader{}
+	if _, err = header.ReadFrom(c.conn); errors.Is(err, os.ErrDeadlineExceeded) {
+		// No incoming data
+		return nil
+	} else if err != nil {
+		// Some other error occurred. Return it
+		return
+	}
+
+	// Extend I/O deadline
+	if err = c.conn.SetDeadline(time.Now().Add(time.Second * 1)); err != nil {
+		return
+	}
+
+	// Read control packet
+	switch header.GetType() {
+	//case packets.PUBLISH:
+	//case packets.PUBACK:
+	//case packets.PUBREC:
+	//case packets.PUBREL:
+	//case packets.PUBCOMP:
+	case packets.SUBACK:
+		suback := &packets.Suback{Header: header}
+		if _, err = suback.ReadFrom(c.conn); err != nil {
+			return
+		}
+		c.signal(packets.SUBACK, suback)
+	case packets.UNSUBACK:
+		unsuback := &packets.Unsuback{}
+		if _, err = unsuback.ReadFrom(c.conn); err != nil {
+			return
+		}
+		c.signal(packets.UNSUBACK, unsuback)
+	case packets.DISCONNECT:
+		disconnect := &packets.Disconnect{Header: header}
+		if _, err = disconnect.ReadFrom(c.conn); err != nil {
+			return
+		}
+		// Close the connection
+		if err = c.conn.Close(); err != nil {
+			return
+		}
+		c.signal(packets.DISCONNECT, disconnect)
+	//case packets.AUTH:
+
+	default: // TODO Remove this case
+		c.conn.Read(make([]byte, header.Remaining))
+	}
+
+	// TODO: Process control packet
+
+	return nil
 }

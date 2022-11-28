@@ -56,31 +56,32 @@ func (d *Disconnect) ReadFrom(r io.Reader) (n int64, err error) {
 	/* Variable header end */
 
 	/* Properties begin */
-	var propertiesLen int
-	if propertiesLen, count, err = ReadVariableByteInt(r); err != nil {
+	var propertiesLen VariableByteInt
+	if count, err = propertiesLen.ReadFrom(r); err != nil {
 		return 0, err
 	}
 	n += count
 
-	for propertiesLen > 0 {
+	remaining := int(propertiesLen)
+	for remaining > 0 {
 		// Read the identifier byte
 		var identifier byte
 		if identifier, err = ReadByte(r); err != nil {
 			return 0, err
 		}
-		propertiesLen--
+		remaining--
 
 		switch identifier {
 		case 0x11: // Session expiry interval
 			if err = binary.Read(r, binary.BigEndian, &d.SessionExpiryInterval); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 4
+			remaining -= 4
 		case 0x1F: // Reason String
 			if d.ReasonString, err = ReadStringFrom(r); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2 + len(d.ReasonString)
+			remaining -= 2 + len(d.ReasonString)
 		case 0x26: // User Property
 			if d.UserProperties == nil {
 				d.UserProperties = make(map[string]string)
@@ -94,12 +95,12 @@ func (d *Disconnect) ReadFrom(r io.Reader) (n int64, err error) {
 				return 0, err
 			}
 			d.UserProperties[k] = v
-			propertiesLen -= 4 + len(k) + len(v)
+			remaining -= 4 + len(k) + len(v)
 		case 0x1C: // Server Reference
 			if d.ServerReference, err = ReadStringFrom(r); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2 + len(d.ServerReference)
+			remaining -= 2 + len(d.ServerReference)
 		}
 	}
 
@@ -109,8 +110,8 @@ func (d *Disconnect) ReadFrom(r io.Reader) (n int64, err error) {
 }
 
 func (d *Disconnect) WriteTo(w io.Writer) (n int64, err error) {
-	variableHeaderLen := 2 // Account for reason code and properties length var
-	propertiesLen := 0
+	variableHeaderLen := VariableByteInt(2) // Account for reason code and properties length var
+	propertiesLen := VariableByteInt(0)
 
 	// Calculate properties length
 	if d.SessionExpiryInterval > 0 {
@@ -118,15 +119,15 @@ func (d *Disconnect) WriteTo(w io.Writer) (n int64, err error) {
 	}
 
 	if len(d.UserProperties) > 0 {
-		propertiesLen += 3 + len(d.UserProperties)
+		propertiesLen += VariableByteInt(3 + len(d.UserProperties))
 	}
 
 	for k, v := range d.UserProperties {
-		propertiesLen += 5 + len(k) + len(v)
+		propertiesLen += VariableByteInt(5 + len(k) + len(v))
 	}
 
 	if len(d.ServerReference) > 0 {
-		propertiesLen += 3 + len(d.ServerReference)
+		propertiesLen += VariableByteInt(3 + len(d.ServerReference))
 	}
 
 	variableHeaderLen += propertiesLen
@@ -144,7 +145,7 @@ func (d *Disconnect) WriteTo(w io.Writer) (n int64, err error) {
 	}
 
 	/* Properties begin */
-	if _, err = WriteVariableByteInt(propertiesLen, w); err != nil {
+	if _, err = propertiesLen.WriteTo(w); err != nil {
 		return 0, err
 	}
 

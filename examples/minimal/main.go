@@ -35,7 +35,7 @@ import (
 
 func main() {
 	// Open connection to test server
-	conn, err := net.Dial("tcp", "test.mosquitto.org:1884")
+	conn, err := net.Dial("tcp", "test.mosquitto.org:1883")
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -44,12 +44,12 @@ func main() {
 	client := mqtt.NewClient(conn)
 
 	// Create an event channel to be notified on by the client
-	events := client.CreateEventChannel()
+	events := client.CreateEventChannel(10)
 
 	// Set up a connection packet
 	connPacket := packets.Connect{
 		Version:                    packets.MQTT5,
-		ClientId:                   "super-secret-test-client3",
+		ClientId:                   "super-secret-test-client",
 		Username:                   "not-used",
 		Password:                   "supersecurepassword",
 		WillRetain:                 false,
@@ -68,10 +68,28 @@ func main() {
 
 	// Attempt to connect
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
 	if err = client.Connect(ctx, connPacket); err != nil {
+		cancel()
 		log.Fatalln(err)
 	}
+	cancel()
+
+	// Subscribe to topics
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second*30)
+	topic := mqtt.Topic{}
+	topic.SetFilter("a/b").SetQoS(packets.QoS1)
+
+	topic2 := mqtt.Topic{}
+	topic2.SetFilter("c/d").SetQoS(packets.QoS2)
+
+	if err = client.Subscribe(context.Background(), []mqtt.Topic{
+		topic,
+		topic2,
+	}); err != nil {
+		cancel()
+		log.Fatalln("Subscribe error:", err)
+	}
+	cancel()
 
 	// Use ticker to send periodic keep-alive control packets
 	ticker := time.NewTicker(client.KeepAliveInterval())
@@ -82,12 +100,23 @@ func main() {
 			select {
 			case <-ticker.C:
 				if err := client.KeepAlive(); err != nil {
-					log.Fatalln(err)
+					log.Fatalln("Keep Alive Error:", err)
 				}
-				println("ping")
 			case e := <-events.C:
-				if e.PacketType == packets.CONNACK {
-					println("MQTT client connected!")
+				switch e.PacketType {
+				case packets.CONNACK:
+					log.Println("MQTT client connected!")
+				case packets.DISCONNECT:
+					log.Println("MQTT client has been disconnected")
+				case packets.SUBACK:
+					log.Println("Subscribed to topic(s)")
+				default:
+					println("Received packet:", e.PacketType)
+				}
+			default:
+				// Poll for incoming messages
+				if err := client.Poll(); err != nil {
+					log.Printf("Poll error: %v\n", err)
 				}
 			}
 		}

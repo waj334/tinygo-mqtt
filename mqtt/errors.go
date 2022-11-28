@@ -29,6 +29,7 @@ import "errors"
 var (
 	ErrUnexpectedPacketTypeReceived = errors.New("unexpected packet type received")
 	ErrClientNotConnected           = errors.New("the client is not connected")
+	ErrInvalidArgument              = errors.New("invalid argument")
 )
 
 type ReasonCode byte

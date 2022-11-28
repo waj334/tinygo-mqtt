@@ -80,8 +80,8 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 	/* Variable header end */
 
 	/* Properties begin */
-	var propertiesLen int
-	if propertiesLen, count, err = ReadVariableByteInt(r); err != nil {
+	var propertiesLen VariableByteInt
+	if count, err = propertiesLen.ReadFrom(r); err != nil {
 		return 0, err
 	}
 	n += count
@@ -90,57 +90,60 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 		return
 	}
 
-	for propertiesLen > 0 {
+	n += int64(propertiesLen)
+	remaining := int(propertiesLen)
+
+	for remaining > 0 {
 		// Read the identifier byte
 		var identifier byte
 		if identifier, err = ReadByte(r); err != nil {
 			return 0, err
 		}
-		propertiesLen--
+		remaining--
 
 		switch identifier {
 		case 0x11: // Session Expiry Interval
 			if err = binary.Read(r, binary.BigEndian, &c.SessionExpiryInterval); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 4
+			remaining -= 4
 		case 0x21: // Receive Maximum
 			if err = binary.Read(r, binary.BigEndian, &c.ReceiveMaximum); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2
+			remaining -= 2
 		case 0x24: // Maximum QoS
 			if err = binary.Read(r, binary.BigEndian, &c.MaximumQoS); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 1
+			remaining -= 1
 		case 0x25: // Retain Available
 			var on byte
 			if err = binary.Read(r, binary.BigEndian, &on); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 1
+			remaining -= 1
 			c.RetainAvailable = on != 0
 		case 0x27: // Maximum Packet Size
 			if err = binary.Read(r, binary.BigEndian, &c.MaximumPacketSize); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 4
+			remaining -= 4
 		case 0x12: // Assigned Client Identifier
 			if c.ClientId, err = ReadStringFrom(r); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2 + len(c.ClientId)
+			remaining -= 2 + len(c.ClientId)
 		case 0x22: // Topic Alias Maximum
 			if err = binary.Read(r, binary.BigEndian, &c.TopicAliasMaximum); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2
+			remaining -= 2
 		case 0x1F: // Reason String
 			if c.ReasonString, err = ReadStringFrom(r); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2 + len(c.ReasonString)
+			remaining -= 2 + len(c.ReasonString)
 		case 0x26: // User Property
 			if c.UserProperties == nil {
 				c.UserProperties = make(map[string]string)
@@ -154,57 +157,57 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 				return 0, err
 			}
 			c.UserProperties[k] = v
-			propertiesLen -= 4 + len(k) + len(v)
+			remaining -= 4 + len(k) + len(v)
 		case 0x28: // Wildcard Subscription Available
 			var on byte
 			if err = binary.Read(r, binary.BigEndian, &on); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 1
+			remaining -= 1
 			c.WildcardSubscriptions = on != 0
 		case 0x29: // Subscription Identifiers Available
 			var on byte
 			if err = binary.Read(r, binary.BigEndian, &on); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 1
+			remaining -= 1
 			c.SubscriptionIdentifiers = on != 0
 		case 0x2A: // Shared Subscription Available
 			var on byte
 			if err = binary.Read(r, binary.BigEndian, &on); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 1
+			remaining -= 1
 			c.SharedSubscriptions = on != 0
 		case 0x13: // Server Keep Alive
 			if err = binary.Read(r, binary.BigEndian, &c.ServerKeepAlive); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2
+			remaining -= 2
 		case 0x1A: // Response Information
 			if c.ResponseInformation, err = ReadStringFrom(r); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2 + len(c.ResponseInformation)
+			remaining -= 2 + len(c.ResponseInformation)
 		case 0x1C: // Server Reference
 			if c.ServerReference, err = ReadStringFrom(r); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2 + len(c.ServerReference)
+			remaining -= 2 + len(c.ServerReference)
 		case 0x15: // Authentication Method
 			if c.AuthenticationMethod, err = ReadStringFrom(r); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2 + len(c.AuthenticationMethod)
+			remaining -= 2 + len(c.AuthenticationMethod)
 		case 0x16: // Authentication Data
 			if c.AuthenticationData, err = ReadStringFrom(r); err != nil {
 				return 0, err
 			}
-			propertiesLen -= 2 + len(c.AuthenticationData)
+			remaining -= 2 + len(c.AuthenticationData)
 		}
 	}
 
-	n += int64(propertiesLen)
+	n += int64(c.Header.Remaining)
 	/* Properties end */
 	return
 }

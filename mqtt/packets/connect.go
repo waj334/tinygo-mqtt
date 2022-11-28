@@ -71,43 +71,45 @@ type Connect struct {
 
 func (c *Connect) WriteTo(w io.Writer) (n int64, err error) {
 	var flags byte
-	variableHeaderLen := 11
-	propertiesLen := 0
-	willPropertiesLen := 0
-	payloadLen := len(c.ClientId) + 2
+	variableHeaderLen := VariableByteInt(11)
+	propertiesLen := VariableByteInt(0)
+	willPropertiesLen := VariableByteInt(0)
+	payloadLen := 2 + VariableByteInt(len(c.ClientId))
 
 	// Calculate length of properties and payload
 	if c.SessionExpiryInterval > 0 {
-		variableHeaderLen += 5
+		propertiesLen += 5
 	}
 
 	if c.ReceiveMaximum > 0 {
-		variableHeaderLen += 3
+		propertiesLen += 3
 	}
 
 	if c.MaximumPacketSize > 0 {
-		variableHeaderLen += 5
+		propertiesLen += 5
 	}
 
 	if c.TopicAliasMaximum > 0 {
-		variableHeaderLen += 3
+		propertiesLen += 3
 	}
 
 	if c.RequestResponseInformation > 0 {
-		variableHeaderLen += 2
+		propertiesLen += 2
 	}
 
 	if c.RequestProblemInformation > 0 {
-		variableHeaderLen += 2
+		propertiesLen += 2
 	}
 
 	for k, v := range c.UserProperties {
-		variableHeaderLen += 5 + len(k) + len(v)
+		propertiesLen += 5 + VariableByteInt(len(k)+len(v))
 	}
 
 	if len(c.AuthenticationMethod) > 0 {
-		variableHeaderLen += 6 + len(c.AuthenticationMethod) + len(c.AuthenticationData)
+		propertiesLen += 6 + VariableByteInt(len(c.AuthenticationMethod)+len(c.AuthenticationData))
 	}
+
+	variableHeaderLen += propertiesLen
 
 	// Set flags bits
 	if c.CleanSession {
@@ -118,13 +120,13 @@ func (c *Connect) WriteTo(w io.Writer) (n int64, err error) {
 	if len(c.Username) > 0 {
 		// Set bit 7
 		flags |= 1 << 7
-		payloadLen += 2 + len(c.Username)
+		payloadLen += 2 + VariableByteInt(len(c.Username))
 	}
 
 	if len(c.Password) > 0 {
 		// Set bit 6
 		flags |= 1 << 6
-		payloadLen += 2 + len(c.Password)
+		payloadLen += 2 + VariableByteInt(len(c.Password))
 	}
 
 	if len(c.Will) > 0 {
@@ -140,8 +142,8 @@ func (c *Connect) WriteTo(w io.Writer) (n int64, err error) {
 		flags |= c.WillQos << 3
 
 		// The will and will topic are actually a part of the payload
-		payloadLen += 2 + len(c.Will) + 1 // Includes byte for payload property indicator
-		payloadLen += 2 + len(c.WillTopic)
+		payloadLen += 3 + VariableByteInt(len(c.Will)) // Includes byte for payload property indicator
+		payloadLen += 2 + VariableByteInt(len(c.WillTopic))
 
 		if c.WillDelayInterval > 0 {
 			willPropertiesLen += 5
@@ -152,19 +154,19 @@ func (c *Connect) WriteTo(w io.Writer) (n int64, err error) {
 		}
 
 		if len(c.WillContentType) > 0 {
-			willPropertiesLen += 3 + len(c.WillContentType)
+			willPropertiesLen += 3 + VariableByteInt(len(c.WillContentType))
 		}
 
 		if len(c.WillResponseTopic) > 0 {
-			willPropertiesLen += 3 + len(c.WillResponseTopic)
+			willPropertiesLen += 3 + VariableByteInt(len(c.WillResponseTopic))
 		}
 
 		if len(c.WillCorrelationData) > 0 {
-			willPropertiesLen += 3 + len(c.WillCorrelationData)
+			willPropertiesLen += 3 + VariableByteInt(len(c.WillCorrelationData))
 		}
 
 		for k, v := range c.WillUserProperties {
-			willPropertiesLen += 5 + len(k) + len(v)
+			willPropertiesLen += 5 + VariableByteInt(len(k)+len(v))
 		}
 	}
 
@@ -199,7 +201,7 @@ func (c *Connect) WriteTo(w io.Writer) (n int64, err error) {
 		return 0, err
 	}
 
-	if _, err = WriteVariableByteInt(propertiesLen, w); err != nil {
+	if _, err = propertiesLen.WriteTo(w); err != nil {
 		return 0, err
 	}
 
@@ -271,7 +273,7 @@ func (c *Connect) WriteTo(w io.Writer) (n int64, err error) {
 
 	if len(c.Will) > 0 {
 		/* Will properties begin */
-		if _, err = WriteVariableByteInt(willPropertiesLen, w); err != nil {
+		if _, err = willPropertiesLen.WriteTo(w); err != nil {
 			return 0, err
 		}
 
@@ -329,7 +331,6 @@ func (c *Connect) WriteTo(w io.Writer) (n int64, err error) {
 				return 0, err
 			}
 		}
-
 		/* Will properties end */
 
 		// Will topic
@@ -358,6 +359,6 @@ func (c *Connect) WriteTo(w io.Writer) (n int64, err error) {
 	}
 	/* Payload end */
 
-	n += int64(variableHeaderLen + propertiesLen + payloadLen)
+	n += int64(variableHeaderLen + payloadLen)
 	return
 }

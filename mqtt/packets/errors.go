@@ -22,23 +22,10 @@
  * SOFTWARE.
  */
 
-package mqtt
+package packets
 
-import "github.com/waj334/tinygo-mqtt/mqtt/packets"
+import "errors"
 
-// Event struct containing the control packet that triggered the event
-type Event struct {
-	// PacketType is the type of control packet that triggered the event.
-	PacketType packets.PacketType
-
-	// Data stores the packet that triggered the event. Data should be converted to the control packet struct type as
-	// denoted by the PacketType member.
-	Data any
-}
-
-// EventChannel represents the channel on which the client will use to notify consumers of events.
-type EventChannel struct {
-	C <-chan *Event
-
-	id int
-}
+var (
+	ErrControlPacketIsMalformed = errors.New("the control packet is malformed")
+)

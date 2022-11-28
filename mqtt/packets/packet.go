@@ -27,8 +27,19 @@ package packets
 import "io"
 
 type (
-	PacketType   byte
-	PacketHeader [2]byte
+	PacketType           byte
+	QoS                  byte
+	RetainHandlingOption byte
+)
+
+const (
+	QoS0 QoS = 0
+	QoS1 QoS = 1
+	QoS2 QoS = 2
+
+	SendAtTimeOfSubscribe       RetainHandlingOption = 0
+	SendAtTimeOfUniqueSubscribe RetainHandlingOption = 1
+	DoNotSendRetainedMessages   RetainHandlingOption = 2
 )
 
 const (
@@ -71,7 +82,7 @@ const (
 	// PINGRESP - PING response
 	PINGRESP
 
-	//DISCONNECT - Disconnect notification
+	// DISCONNECT - Disconnect notification
 	DISCONNECT
 
 	// AUTH - Authentication exchange
@@ -80,7 +91,7 @@ const (
 
 type FixedHeader struct {
 	Header    byte
-	Remaining int
+	Remaining VariableByteInt
 }
 
 func (f *FixedHeader) SetType(packetType PacketType) {
@@ -106,14 +117,15 @@ func (f *FixedHeader) WriteTo(w io.Writer) (n int64, err error) {
 	if err = WriteByte(f.Header, w); err != nil {
 		return 0, err
 	}
+	n++
 
 	// Write the variable length
-	var count int
-	if count, err = WriteVariableByteInt(f.Remaining, w); err != nil {
+	var count int64
+	if count, err = f.Remaining.WriteTo(w); err != nil {
 		return 0, err
 	}
+	n += count
 
-	n += 1 + int64(count) // Account for byte 1
 	return
 }
 
@@ -122,11 +134,13 @@ func (f *FixedHeader) ReadFrom(r io.Reader) (n int64, err error) {
 	if f.Header, err = ReadByte(r); err != nil {
 		return 0, err
 	}
+	n++
 
-	if f.Remaining, n, err = ReadVariableByteInt(r); err != nil {
+	var count int64
+	if count, err = f.Remaining.ReadFrom(r); err != nil {
 		return 0, err
 	}
+	n += count
 
-	n++ // Account for byte 1
 	return
 }
