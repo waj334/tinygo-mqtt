@@ -41,11 +41,72 @@ type Client struct {
 	isConnected           bool
 	keepAliveInterval     time.Duration
 	sessionExpiryInterval uint32
+
+	eventChans      map[int]chan<- Event
+	evChanIdCounter int
+	eventMutex      sync.Mutex
 }
 
 func NewClient(conn net.Conn) *Client {
 	return &Client{
-		conn: conn,
+		conn:       conn,
+		eventChans: make(map[int]chan<- Event),
+	}
+}
+
+// CreateEventChannel creates an event channel struct that the client will use to notify when events (connect,
+// disconnect, publish, subscribe, etc...) occur. Consumers must consume a pending event before any incoming events can
+// be received. Prior events will not be signalled on the new channel.
+func (c *Client) CreateEventChannel() EventChannel {
+	c.eventMutex.Lock()
+	defer c.eventMutex.Unlock()
+
+	// Create a channel for consumers to be signalled on
+	channel := make(chan Event, 1)
+
+	// Create the struct that will be returned to the caller
+	result := EventChannel{
+		C:  channel,
+		id: c.evChanIdCounter,
+	}
+
+	// Track this chan so fanout signalling can occur later
+	c.eventChans[c.evChanIdCounter] = channel
+	c.evChanIdCounter++
+
+	return result
+}
+
+// CloseEventChannel closes the event channel. No further events will be signalled on the channel.
+func (c *Client) CloseEventChannel(eventChan EventChannel) {
+	c.eventMutex.Lock()
+	defer c.eventMutex.Unlock()
+
+	if channel, ok := c.eventChans[eventChan.id]; ok {
+		// Close the channel so that no further signals can occur on it
+		close(channel)
+	}
+}
+
+// signal signals on all event channels in a fanout fashion. This function is only meant to be called by the client
+// internally.
+func (c *Client) signal(packetType packets.PacketType, data any) {
+	c.eventMutex.Lock()
+	defer c.eventMutex.Unlock()
+
+	e := Event{
+		PacketType: packetType,
+		Data:       data,
+	}
+
+	// Fanout
+	for _, channel := range c.eventChans {
+		select {
+		case channel <- e:
+			// Signalled
+		default:
+			// Already has a pending event. This channel will miss the current event
+		}
 	}
 }
 
@@ -86,12 +147,12 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	}
 
 	// Create the Connack packet
-	ack := packets.Connack{
+	connack := packets.Connack{
 		Header: header,
 	}
 	// Begin reading the CONNACK response
 	if err = backoff(ctx, func() error {
-		_, err := ack.ReadFrom(c.conn)
+		_, err := connack.ReadFrom(c.conn)
 		return err
 	}); err != nil {
 		return
@@ -100,22 +161,22 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	// Did the server send an error response?
 	// SPEC: If a Server sends a CONNACK packet containing a Reason code of 128 or greater it MUST then close the
 	//       Network Connection [MQTT-3.2.2-7].
-	if ack.ReasonCode >= 128 {
+	if connack.ReasonCode >= 128 {
 		// Close the connection
 		if err = c.conn.Close(); err != nil {
 			return
 		}
 
 		// Error the ACK as the error
-		return ReasonCode(ack.ReasonCode)
+		return ReasonCode(connack.ReasonCode)
 	}
 
 	// Handle server keep alive specification
-	if ack.ServerKeepAlive > 0 {
+	if connack.ServerKeepAlive > 0 {
 		// Use the keep alive interval returned by the server
 		// SPEC: If the Server returns a Server Keep Alive on the CONNACK packet, the Client MUST use that value instead
 		//       of the value it sent as the Keep Alive. [MQTT-3.1.2-21]
-		c.keepAliveInterval = time.Second * time.Duration(ack.ServerKeepAlive)
+		c.keepAliveInterval = time.Second * time.Duration(connack.ServerKeepAlive)
 	} else if packet.KeepAlive > 0 {
 		// Use the keep alive interval defined in the CONNECT packet
 		c.keepAliveInterval = time.Second * time.Duration(packet.KeepAlive)
@@ -130,7 +191,9 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	// Successful connection!
 	c.isConnected = true
 
-	// TODO: Execute connect hook
+	// Signal CONNACK event
+	c.signal(packets.CONNACK, connack)
+
 	return
 }
 
@@ -197,7 +260,8 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 
 	c.isConnected = false
 
-	// TODO: Execute disconnect hook
+	// Signal disconnect
+	c.signal(packets.DISCONNECT, disconnect)
 
 	return nil
 }
@@ -258,7 +322,9 @@ func (c *Client) KeepAlive() (err error) {
 			return err
 		}
 
-		// TODO: Execute disconnect hook
+		// Signal synthetic DISCONNECT event
+		// TODO: Determine if this is even necessary
+		c.signal(packets.DISCONNECT, nil)
 
 		return
 	} else if err != nil {

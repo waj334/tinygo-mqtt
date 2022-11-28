@@ -43,6 +43,9 @@ func main() {
 	// Create a new client
 	client := mqtt.NewClient(conn)
 
+	// Create an event channel to be notified on by the client
+	events := client.CreateEventChannel()
+
 	// Set up a connection packet
 	connPacket := packets.Connect{
 		Version:                    packets.MQTT5,
@@ -70,10 +73,10 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	println("MQTT client connected!")
-
-	// Start keep alive
+	// Use ticker to send periodic keep-alive control packets
 	ticker := time.NewTicker(client.KeepAliveInterval())
+
+	// Start event processing loop
 	go func() {
 		for {
 			select {
@@ -82,6 +85,10 @@ func main() {
 					log.Fatalln(err)
 				}
 				println("ping")
+			case e := <-events.C:
+				if e.PacketType == packets.CONNACK {
+					println("MQTT client connected!")
+				}
 			}
 		}
 	}()
