@@ -27,6 +27,7 @@ package mqtt
 import (
 	"context"
 	"errors"
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
 	"net"
 	"os"
 	"sync"
@@ -213,7 +214,7 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	// set up correctly later.
 	// SPEC: If the Session Expiry Interval in the CONNECT packet was zero, then it is a Protocol Error to set a
 	//       non-zero Session Expiry Interval in the DISCONNECT packet sent by the Client.
-	c.sessionExpiryInterval = packet.SessionExpiryInterval
+	c.sessionExpiryInterval = uint32(packet.SessionExpiryInterval)
 
 	// Successful connection!
 	c.isConnected = true
@@ -270,7 +271,7 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 	// SPEC: If the Session Expiry Interval in the CONNECT packet was zero, then it is a Protocol Error to set a
 	//       non-zero Session Expiry Interval in the DISCONNECT packet sent by the Client.
 	if c.sessionExpiryInterval != 0 {
-		disconnect.SessionExpiryInterval = uint32(sessionExpiryInterval)
+		disconnect.SessionExpiryInterval = primitives.PrimitiveUint32(sessionExpiryInterval)
 	}
 
 	// Send the DISCONNECT packet to the server
@@ -323,7 +324,7 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 		_topics = append(_topics, topics[index].Topic)
 	}
 	subscribe := packets.Subscribe{
-		PacketIdentifier: uint16(c.packetIdCounter),
+		PacketIdentifier: primitives.PrimitiveUint16(c.packetIdCounter),
 		Topics:           _topics,
 
 		// TODO: Use context to set these optional parameters
@@ -443,7 +444,7 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 		_topics = append(_topics, t)
 	}
 	unsubscribe := packets.Unsubscribe{
-		PacketIdentifier: uint16(c.packetIdCounter),
+		PacketIdentifier: primitives.PrimitiveUint16(c.packetIdCounter),
 		Topics:           _topics,
 
 		// TODO: Use context to set these optional parameters

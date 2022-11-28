@@ -25,17 +25,18 @@
 package packets
 
 import (
-	"encoding/binary"
 	"io"
+
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
 )
 
 type Unsuback struct {
 	Header           FixedHeader
-	PacketIdentifier uint16
+	PacketIdentifier primitives.PrimitiveUint16
 
 	/* Properties */
-	ReasonString   string
-	UserProperties map[string]string
+	ReasonString   primitives.PrimitiveString
+	UserProperties primitives.PrimitiveStringMap
 
 	/* Payload */
 	ReasonCodes []byte
@@ -50,10 +51,9 @@ func (u *Unsuback) ReadFrom(r io.Reader) (n int64, err error) {
 	}
 
 	/* Variable header begin */
-	if err = binary.Read(r, binary.BigEndian, &u.PacketIdentifier); err != nil {
+	if n, err = u.PacketIdentifier.ReadFrom(r); err != nil {
 		return 0, err
 	}
-	n += 2
 
 	if n >= int64(u.Header.Remaining) {
 		return
@@ -61,7 +61,7 @@ func (u *Unsuback) ReadFrom(r io.Reader) (n int64, err error) {
 	/* Variable header end */
 
 	/* Properties header start */
-	var propertiesLen VariableByteInt
+	var propertiesLen primitives.VariableByteInt
 	if count, err = propertiesLen.ReadFrom(r); err != nil {
 		return 0, err
 	}
@@ -71,38 +71,39 @@ func (u *Unsuback) ReadFrom(r io.Reader) (n int64, err error) {
 		return
 	}
 
-	n += int64(propertiesLen)
-	remaining := int(propertiesLen)
-
+	remaining := int64(propertiesLen)
 	for remaining > 0 {
 		// Read the identifier byte
 		var identifier byte
-		if identifier, err = ReadByte(r); err != nil {
+		if identifier, err = primitives.ReadByte(r); err != nil {
 			return 0, err
 		}
+		n++
 		remaining--
 
 		switch identifier {
 		case 0x1F: // Reason String
-			if u.ReasonString, err = ReadStringFrom(r); err != nil {
+			if count, err = u.ReasonString.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(u.ReasonString)
 		case 0x26: // User Property
 			if u.UserProperties == nil {
-				u.UserProperties = make(map[string]string)
+				u.UserProperties = make(primitives.PrimitiveStringMap)
 			}
-			var k, v string
-			if k, err = ReadStringFrom(r); err != nil {
+			var k, v primitives.PrimitiveString
+			if count, err = k.ReadFrom(r); err != nil {
 				return 0, err
 			}
 
-			if v, err = ReadStringFrom(r); err != nil {
+			var count2 int64
+			if count2, err = v.ReadFrom(r); err != nil {
 				return 0, err
 			}
+			count += count2
 			u.UserProperties[k] = v
-			remaining -= 4 + len(k) + len(v)
 		}
+		n += count
+		remaining -= count
 	}
 
 	// Fail if this is the end of the control packet

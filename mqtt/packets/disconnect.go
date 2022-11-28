@@ -25,109 +25,104 @@
 package packets
 
 import (
-	"encoding/binary"
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
 	"io"
 )
 
 type Disconnect struct {
 	Header     FixedHeader
-	ReasonCode byte
+	ReasonCode primitives.PrimitiveByte
 
 	/* Properties */
-	SessionExpiryInterval uint32
-	ReasonString          string
-	UserProperties        map[string]string
-	ServerReference       string
+	SessionExpiryInterval primitives.PrimitiveUint32
+	ReasonString          primitives.PrimitiveString
+	UserProperties        primitives.PrimitiveStringMap
+	ServerReference       primitives.PrimitiveString
 }
 
 func (d *Disconnect) ReadFrom(r io.Reader) (n int64, err error) {
 	var count int64
 
 	/* Variable header begin */
-	if d.ReasonCode, err = ReadByte(r); err != nil {
+	if count, err = d.ReasonCode.ReadFrom(r); err != nil {
 		return 0, err
 	}
-	n++
+	n += count
 
 	if n >= int64(d.Header.Remaining) {
 		return
 	}
 
-	/* Variable header end */
-
 	/* Properties begin */
-	var propertiesLen VariableByteInt
+	var propertiesLen primitives.VariableByteInt
 	if count, err = propertiesLen.ReadFrom(r); err != nil {
 		return 0, err
 	}
 	n += count
 
-	remaining := int(propertiesLen)
+	remaining := int64(propertiesLen)
 	for remaining > 0 {
 		// Read the identifier byte
 		var identifier byte
-		if identifier, err = ReadByte(r); err != nil {
+		if identifier, err = primitives.ReadByte(r); err != nil {
 			return 0, err
 		}
+		n++
 		remaining--
 
 		switch identifier {
 		case 0x11: // Session expiry interval
-			if err = binary.Read(r, binary.BigEndian, &d.SessionExpiryInterval); err != nil {
+			if count, err = d.SessionExpiryInterval.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 4
 		case 0x1F: // Reason String
-			if d.ReasonString, err = ReadStringFrom(r); err != nil {
+			if count, err = d.ReasonString.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(d.ReasonString)
 		case 0x26: // User Property
 			if d.UserProperties == nil {
-				d.UserProperties = make(map[string]string)
+				d.UserProperties = make(primitives.PrimitiveStringMap)
 			}
-			var k, v string
-			if k, err = ReadStringFrom(r); err != nil {
+			var k, v primitives.PrimitiveString
+			if count, err = k.ReadFrom(r); err != nil {
 				return 0, err
 			}
 
-			if v, err = ReadStringFrom(r); err != nil {
+			var count2 int64
+			if count2, err = v.ReadFrom(r); err != nil {
 				return 0, err
 			}
+			count += count2
 			d.UserProperties[k] = v
-			remaining -= 4 + len(k) + len(v)
 		case 0x1C: // Server Reference
-			if d.ServerReference, err = ReadStringFrom(r); err != nil {
+			if count, err = d.ServerReference.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(d.ServerReference)
 		}
+		n += count
+		remaining -= count
 	}
-
-	n += int64(propertiesLen)
 	/* Properties end */
+	/* Variable header end */
+
 	return
 }
 
 func (d *Disconnect) WriteTo(w io.Writer) (n int64, err error) {
-	variableHeaderLen := VariableByteInt(2) // Account for reason code and properties length var
-	propertiesLen := VariableByteInt(0)
+	variableHeaderLen := primitives.VariableByteInt(2) // Account for reason code and properties length var
+	propertiesLen := primitives.VariableByteInt(0)
 
 	// Calculate properties length
 	if d.SessionExpiryInterval > 0 {
-		propertiesLen += 5
-	}
-
-	if len(d.UserProperties) > 0 {
-		propertiesLen += VariableByteInt(3 + len(d.UserProperties))
+		propertiesLen += d.SessionExpiryInterval.Length(true)
 	}
 
 	for k, v := range d.UserProperties {
-		propertiesLen += VariableByteInt(5 + len(k) + len(v))
+		propertiesLen += 1 + k.Length(false) + v.Length(false)
 	}
 
 	if len(d.ServerReference) > 0 {
-		propertiesLen += VariableByteInt(3 + len(d.ServerReference))
+		propertiesLen += d.ServerReference.Length(true)
 	}
 
 	variableHeaderLen += propertiesLen
@@ -135,46 +130,58 @@ func (d *Disconnect) WriteTo(w io.Writer) (n int64, err error) {
 	// Write fixed header
 	d.Header.SetType(DISCONNECT)
 	d.Header.Remaining = variableHeaderLen
+
+	var count int64
 	if n, err = d.Header.WriteTo(w); err != nil {
 		return 0, err
 	}
 
 	// Write reason code
-	if err = WriteByte(d.ReasonCode, w); err != nil {
+	if count, err = d.ReasonCode.WriteTo(w); err != nil {
 		return 0, err
 	}
+	n += count
 
 	/* Properties begin */
-	if _, err = propertiesLen.WriteTo(w); err != nil {
+	if count, err = propertiesLen.WriteTo(w); err != nil {
 		return 0, err
 	}
+	n += count
 
 	// Session expiry interval
-	if err = WriteUint32(d.SessionExpiryInterval, w); err != nil {
-		return 0, err
+	if d.SessionExpiryInterval > 0 {
+		if count, err = d.SessionExpiryInterval.WriteToAsProperty(0x11, w); err != nil {
+			return 0, err
+		}
+		n += count
 	}
 
 	// Reason string
-	if _, err = WriteStringTo(d.ReasonString, w); err != nil {
-		return 0, err
+	if len(d.ReasonString) > 0 {
+		if count, err = d.ReasonString.WriteToAsProperty(0x1F, w); err != nil {
+			return 0, err
+		}
+		n += count
 	}
 
 	// User properties
 	for k, v := range d.UserProperties {
-		if err = WriteByte(0x26, w); err != nil {
+		if err = primitives.WriteByte(0x26, w); err != nil {
 			return 0, err
 		}
+		n++
 
-		if _, err = WriteStringTo(k, w); err != nil {
+		if count, err = k.WriteTo(w); err != nil {
 			return 0, err
 		}
+		n += count
 
-		if _, err = WriteStringTo(v, w); err != nil {
+		if count, err = v.WriteTo(w); err != nil {
 			return 0, err
 		}
+		n += count
 	}
 	/* Properties end */
 
-	n += int64(variableHeaderLen)
 	return
 }

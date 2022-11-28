@@ -25,33 +25,33 @@
 package packets
 
 import (
-	"encoding/binary"
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
 	"io"
 )
 
 type Connack struct {
 	Header     FixedHeader
-	Flags      byte
-	ReasonCode byte
+	Flags      primitives.PrimitiveByte
+	ReasonCode primitives.PrimitiveByte
 
 	/* Properties */
-	SessionExpiryInterval   uint32
-	ReceiveMaximum          uint16
-	MaximumQoS              byte
-	RetainAvailable         bool
-	MaximumPacketSize       uint32
-	ClientId                string
-	TopicAliasMaximum       uint16
-	ReasonString            string
-	UserProperties          map[string]string
-	WildcardSubscriptions   bool
-	SubscriptionIdentifiers bool
-	SharedSubscriptions     bool
-	ServerKeepAlive         uint16
-	ResponseInformation     string
-	ServerReference         string
-	AuthenticationMethod    string
-	AuthenticationData      string
+	SessionExpiryInterval   primitives.PrimitiveUint32
+	ReceiveMaximum          primitives.PrimitiveUint16
+	MaximumQoS              primitives.PrimitiveByte
+	RetainAvailable         primitives.PrimitiveByte
+	MaximumPacketSize       primitives.PrimitiveUint32
+	ClientId                primitives.PrimitiveString
+	TopicAliasMaximum       primitives.PrimitiveUint16
+	ReasonString            primitives.PrimitiveString
+	UserProperties          primitives.PrimitiveStringMap
+	WildcardSubscriptions   primitives.PrimitiveByte
+	SubscriptionIdentifiers primitives.PrimitiveByte
+	SharedSubscriptions     primitives.PrimitiveByte
+	ServerKeepAlive         primitives.PrimitiveUint16
+	ResponseInformation     primitives.PrimitiveString
+	ServerReference         primitives.PrimitiveString
+	AuthenticationMethod    primitives.PrimitiveString
+	AuthenticationData      primitives.PrimitiveString
 }
 
 func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
@@ -59,19 +59,19 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 
 	/* Variable header begin */
 	// Connect acknowledgement flags
-	if c.Flags, err = ReadByte(r); err != nil {
+	if count, err = c.Flags.ReadFrom(r); err != nil {
 		return 0, err
 	}
-	n++
+	n += count
 
 	if n >= int64(c.Header.Remaining) {
 		return
 	}
 
-	if c.ReasonCode, err = ReadByte(r); err != nil {
+	if count, err = c.ReasonCode.ReadFrom(r); err != nil {
 		return 0, err
 	}
-	n++
+	n += count
 
 	if n >= int64(c.Header.Remaining) {
 		return
@@ -80,7 +80,7 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 	/* Variable header end */
 
 	/* Properties begin */
-	var propertiesLen VariableByteInt
+	var propertiesLen primitives.VariableByteInt
 	if count, err = propertiesLen.ReadFrom(r); err != nil {
 		return 0, err
 	}
@@ -90,121 +90,100 @@ func (c *Connack) ReadFrom(r io.Reader) (n int64, err error) {
 		return
 	}
 
-	n += int64(propertiesLen)
-	remaining := int(propertiesLen)
+	remaining := int64(propertiesLen)
 
 	for remaining > 0 {
 		// Read the identifier byte
 		var identifier byte
-		if identifier, err = ReadByte(r); err != nil {
+		if identifier, err = primitives.ReadByte(r); err != nil {
 			return 0, err
 		}
+		n++
 		remaining--
 
 		switch identifier {
 		case 0x11: // Session Expiry Interval
-			if err = binary.Read(r, binary.BigEndian, &c.SessionExpiryInterval); err != nil {
+			if count, err = c.SessionExpiryInterval.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 4
 		case 0x21: // Receive Maximum
-			if err = binary.Read(r, binary.BigEndian, &c.ReceiveMaximum); err != nil {
+			if count, err = c.ReceiveMaximum.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2
 		case 0x24: // Maximum QoS
-			if err = binary.Read(r, binary.BigEndian, &c.MaximumQoS); err != nil {
+			if count, err = c.MaximumQoS.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 1
 		case 0x25: // Retain Available
-			var on byte
-			if on, err = ReadByte(r); err != nil {
+			if count, err = c.RetainAvailable.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 1
-			c.RetainAvailable = on != 0
 		case 0x27: // Maximum Packet Size
-			if err = binary.Read(r, binary.BigEndian, &c.MaximumPacketSize); err != nil {
+			if count, err = c.MaximumPacketSize.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 4
 		case 0x12: // Assigned Client Identifier
-			if c.ClientId, err = ReadStringFrom(r); err != nil {
+			if count, err = c.ClientId.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(c.ClientId)
 		case 0x22: // Topic Alias Maximum
-			if err = binary.Read(r, binary.BigEndian, &c.TopicAliasMaximum); err != nil {
+			if count, err = c.TopicAliasMaximum.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2
 		case 0x1F: // Reason String
-			if c.ReasonString, err = ReadStringFrom(r); err != nil {
+			if count, err = c.ReasonString.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(c.ReasonString)
 		case 0x26: // User Property
 			if c.UserProperties == nil {
-				c.UserProperties = make(map[string]string)
+				c.UserProperties = make(primitives.PrimitiveStringMap)
 			}
-			var k, v string
-			if k, err = ReadStringFrom(r); err != nil {
+			var k, v primitives.PrimitiveString
+			if count, err = k.ReadFrom(r); err != nil {
 				return 0, err
 			}
 
-			if v, err = ReadStringFrom(r); err != nil {
+			var count2 int64
+			if count2, err = v.ReadFrom(r); err != nil {
 				return 0, err
 			}
+			count += count2
 			c.UserProperties[k] = v
-			remaining -= 4 + len(k) + len(v)
 		case 0x28: // Wildcard Subscription Available
-			var on byte
-			if on, err = ReadByte(r); err != nil {
+			if count, err = c.WildcardSubscriptions.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 1
-			c.WildcardSubscriptions = on != 0
 		case 0x29: // Subscription Identifiers Available
-			var on byte
-			if on, err = ReadByte(r); err != nil {
+			if count, err = c.SubscriptionIdentifiers.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 1
-			c.SubscriptionIdentifiers = on != 0
 		case 0x2A: // Shared Subscription Available
-			var on byte
-			if on, err = ReadByte(r); err != nil {
+			if count, err = c.SharedSubscriptions.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 1
-			c.SharedSubscriptions = on != 0
 		case 0x13: // Server Keep Alive
-			if err = binary.Read(r, binary.BigEndian, &c.ServerKeepAlive); err != nil {
+			if count, err = c.ServerKeepAlive.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2
 		case 0x1A: // Response Information
-			if c.ResponseInformation, err = ReadStringFrom(r); err != nil {
+			if count, err = c.ResponseInformation.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(c.ResponseInformation)
 		case 0x1C: // Server Reference
-			if c.ServerReference, err = ReadStringFrom(r); err != nil {
+			if count, err = c.ServerReference.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(c.ServerReference)
 		case 0x15: // Authentication Method
-			if c.AuthenticationMethod, err = ReadStringFrom(r); err != nil {
+			if count, err = c.AuthenticationMethod.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(c.AuthenticationMethod)
 		case 0x16: // Authentication Data
-			if c.AuthenticationData, err = ReadStringFrom(r); err != nil {
+			if count, err = c.AuthenticationData.ReadFrom(r); err != nil {
 				return 0, err
 			}
-			remaining -= 2 + len(c.AuthenticationData)
 		}
+		n += count
+		remaining -= count
 	}
 
 	n += int64(c.Header.Remaining)

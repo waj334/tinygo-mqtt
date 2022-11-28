@@ -26,23 +26,25 @@ package packets
 
 import (
 	"io"
+
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
 )
 
 type Subscribe struct {
-	PacketIdentifier uint16
+	PacketIdentifier primitives.PrimitiveUint16
 
 	/* Properties */
-	SubscriptionIdentifier VariableByteInt
-	UserProperties         map[string]string
+	SubscriptionIdentifier primitives.VariableByteInt
+	UserProperties         primitives.PrimitiveStringMap
 
 	/* Payload */
 	Topics []Topic
 }
 
 func (s *Subscribe) WriteTo(w io.Writer) (n int64, err error) {
-	variableHeaderLen := VariableByteInt(0)
-	propertiesLen := VariableByteInt(0)
-	payloadLen := VariableByteInt(0)
+	variableHeaderLen := primitives.VariableByteInt(0)
+	propertiesLen := primitives.VariableByteInt(0)
+	payloadLen := primitives.VariableByteInt(0)
 
 	// Fail early if no topics were specified
 	// SPEC: The Payload MUST contain at least one Topic filter and Subscription options pair [MQTT-3.8.3-2]
@@ -52,26 +54,22 @@ func (s *Subscribe) WriteTo(w io.Writer) (n int64, err error) {
 
 	// Calculate length of properties
 	if s.SubscriptionIdentifier > 0 {
-		//[IDENTIFIER = 1] + [LEN(SubscriptionIdentifier) = N]
-		propertiesLen += 1 + s.SubscriptionIdentifier.Length()
+		propertiesLen += s.SubscriptionIdentifier.Length(true)
 	}
 
 	for k, v := range s.UserProperties {
 		//[IDENTIFIER = 1] + [STRING LENGTHS = 2+2] + [LEN(KEY STRING) = N] + [LEN(VALUE STRING) = N]
-		keyLen := VariableByteInt(len(k))
-		valueLen := VariableByteInt(len(v))
-		propertiesLen += 5 + keyLen + valueLen
+		// NOTE: User properties does not implement Primitive yet
+		propertiesLen += 1 + k.Length(false) + v.Length(false)
 	}
 
 	// Calculate length of payload
 	for _, topic := range s.Topics {
-		// [STRING LENGTH = 2] + [LEN(STRING) = N] + [OPTIONS = 1]
-		filterStrLen := VariableByteInt(len(topic.filter))
-		payloadLen += 3 + filterStrLen
+		payloadLen += topic.filter.Length(false) + topic.options.Length(false)
 	}
 
 	//[Packet Identifier = 2] + [PROPERTIES LENGTH = N] + [PROPERTIES = N]
-	variableHeaderLen += 2 + propertiesLen.Length() + propertiesLen
+	variableHeaderLen += 2 + propertiesLen.Length(false) + propertiesLen
 
 	// Write fixed header
 	fh := FixedHeader{
@@ -84,58 +82,62 @@ func (s *Subscribe) WriteTo(w io.Writer) (n int64, err error) {
 	//       [MQTT-3.8.1-1].
 	fh.SetFlags(0x02)
 
+	var count int64
 	if n, err = fh.WriteTo(w); err != nil {
 		return 0, err
 	}
 
 	// Write packet identifier
-	if err = WriteUint16(s.PacketIdentifier, w); err != nil {
+	if count, err = s.PacketIdentifier.WriteTo(w); err != nil {
 		return 0, err
 	}
+	n += count
 
 	/* Properties begin */
-	if _, err = propertiesLen.WriteTo(w); err != nil {
+	if count, err = propertiesLen.WriteTo(w); err != nil {
 		return 0, err
 	}
+	n += count
 
 	// Write subscription identifier
 	if s.SubscriptionIdentifier > 0 {
-		if err = WriteByte(0x0B, w); err != nil {
+		if count, err = s.SubscriptionIdentifier.WriteToAsProperty(0x0B, w); err != nil {
 			return 0, err
 		}
-
-		if _, err = s.SubscriptionIdentifier.WriteTo(w); err != nil {
-			return 0, err
-		}
+		n += count
 	}
 
 	// Write user properties
 	for k, v := range s.UserProperties {
-		if err = WriteByte(0x26, w); err != nil {
+		if err = primitives.WriteByte(0x26, w); err != nil {
 			return 0, err
 		}
+		n++
 
-		if _, err = WriteStringTo(k, w); err != nil {
+		if count, err = k.WriteTo(w); err != nil {
 			return 0, err
 		}
+		n += count
 
-		if _, err = WriteStringTo(v, w); err != nil {
+		if count, err = v.WriteTo(w); err != nil {
 			return 0, err
 		}
+		n += count
 	}
 	/* Properties end */
 	/* Payload begin */
 	for _, topic := range s.Topics {
-		if _, err = WriteStringTo(topic.filter, w); err != nil {
+		if count, err = topic.filter.WriteTo(w); err != nil {
 			return 0, err
 		}
+		n += count
 
-		if err = WriteByte(topic.options, w); err != nil {
+		if count, err = topic.options.WriteTo(w); err != nil {
 			return 0, err
 		}
+		n += count
 	}
 	/* Payload end */
 
-	n += int64(variableHeaderLen + payloadLen)
 	return
 }

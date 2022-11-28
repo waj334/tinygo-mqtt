@@ -24,21 +24,23 @@
 
 package packets
 
+import "github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
+
 type Topic struct {
-	filter  string
-	options byte
+	filter  primitives.PrimitiveString
+	options primitives.PrimitiveByte
 }
 
 func (t *Topic) SetQoS(qos QoS) *Topic {
 	// Set bits [1 - 0]
-	t.options &= ^byte(1 << 0)
-	t.options &= ^byte(1 << 1)
-	t.options |= byte(qos)
+	t.options &= ^primitives.PrimitiveByte(1 << 0)
+	t.options &= ^primitives.PrimitiveByte(1 << 1)
+	t.options |= primitives.PrimitiveByte(qos)
 	return t
 }
 
 func (t *Topic) Filter() string {
-	return t.filter
+	return string(t.filter)
 }
 
 func (t *Topic) SetFilter(filter string) *Topic {
@@ -47,35 +49,35 @@ func (t *Topic) SetFilter(filter string) *Topic {
 		// SPEC: It is a Protocol Error to set the No Local bit to 1 on a Shared Subscription [MQTT-3.8.3-4]
 		t.SetNoLocal(false)
 	}
-	t.filter = filter
+	t.filter = primitives.PrimitiveString(filter)
 	return t
 }
 
 func (t *Topic) SetNoLocal(on bool) *Topic {
 	// Set bit 2
-	t.options &= ^byte(1 << 2)
+	t.options &= ^primitives.PrimitiveByte(1 << 2)
 
 	// Leave bit unset if this is a shared subscription
 	// SPEC: It is a Protocol Error to set the No Local bit to 1 on a Shared Subscription [MQTT-3.8.3-4]
 	if on && t.filter[:6] != "$share" {
-		t.options |= byte(1 << 2)
+		t.options |= primitives.PrimitiveByte(1 << 2)
 	}
 	return t
 }
 
 func (t *Topic) SetRetainAsPublished(on bool) *Topic {
 	// Set bit 3
-	t.options &= ^byte(1 << 3)
+	t.options &= ^primitives.PrimitiveByte(1 << 3)
 	if on {
-		t.options |= byte(1 << 3)
+		t.options |= primitives.PrimitiveByte(1 << 3)
 	}
 	return t
 }
 
 func (t *Topic) SetRetainHandling(handling RetainHandlingOption) *Topic {
 	// Set bits [5 - 4]
-	t.options &= ^byte(1 << 5)
-	t.options &= ^byte(1 << 4)
-	t.options |= byte(handling << 4)
+	t.options &= ^primitives.PrimitiveByte(1 << 5)
+	t.options &= ^primitives.PrimitiveByte(1 << 4)
+	t.options |= primitives.PrimitiveByte(handling << 4)
 	return t
 }

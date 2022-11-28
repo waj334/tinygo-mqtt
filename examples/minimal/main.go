@@ -54,7 +54,7 @@ func main() {
 		Password:                   "supersecurepassword",
 		WillRetain:                 false,
 		WillQos:                    0,
-		Will:                       nil,
+		Will:                       "",
 		CleanSession:               true,
 		KeepAlive:                  30,
 		SessionExpiryInterval:      0,
@@ -67,15 +67,15 @@ func main() {
 	}
 
 	// Attempt to connect
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	if err = client.Connect(ctx, connPacket); err != nil {
-		cancel()
+	//ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	if err = client.Connect(context.Background(), connPacket); err != nil {
+		//cancel()
 		log.Fatalln(err)
 	}
-	cancel()
+	//cancel()
 
 	// Subscribe to topics
-	ctx, cancel = context.WithTimeout(context.Background(), time.Second*30)
+	//ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	topic := mqtt.Topic{}
 	topic.SetFilter("a/b").SetQoS(packets.QoS1)
 
@@ -86,10 +86,10 @@ func main() {
 		topic,
 		topic2,
 	}); err != nil {
-		cancel()
+		//cancel()
 		log.Fatalln("Subscribe error:", err)
 	}
-	cancel()
+	//cancel()
 
 	// Use ticker to send periodic keep-alive control packets
 	ticker := time.NewTicker(client.KeepAliveInterval())

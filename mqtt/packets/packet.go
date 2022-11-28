@@ -24,7 +24,11 @@
 
 package packets
 
-import "io"
+import (
+	"io"
+
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
+)
 
 type (
 	PacketType           byte
@@ -90,34 +94,33 @@ const (
 )
 
 type FixedHeader struct {
-	Header    byte
-	Remaining VariableByteInt
+	Header    primitives.PrimitiveByte
+	Remaining primitives.VariableByteInt
 }
 
 func (f *FixedHeader) SetType(packetType PacketType) {
 	f.Header &= ^(f.Header & 0xF0)
-	f.Header |= byte(packetType << 4)
+	f.Header |= primitives.PrimitiveByte(packetType << 4)
 }
 
 func (f *FixedHeader) GetType() PacketType {
 	return PacketType(f.Header >> 4)
 }
 
-func (f *FixedHeader) SetFlags(flags byte) {
+func (f *FixedHeader) SetFlags(flags primitives.PrimitiveByte) {
 	f.Header &= ^(f.Header & 0x0F)
 	f.Header |= flags & 0x0F
 }
 
-func (f *FixedHeader) GetFlags() byte {
+func (f *FixedHeader) GetFlags() primitives.PrimitiveByte {
 	return f.Header & 0x0F
 }
 
 func (f *FixedHeader) WriteTo(w io.Writer) (n int64, err error) {
 	// Write byte 1
-	if err = WriteByte(f.Header, w); err != nil {
+	if n, err = f.Header.WriteTo(w); err != nil {
 		return 0, err
 	}
-	n++
 
 	// Write the variable length
 	var count int64
@@ -131,10 +134,9 @@ func (f *FixedHeader) WriteTo(w io.Writer) (n int64, err error) {
 
 func (f *FixedHeader) ReadFrom(r io.Reader) (n int64, err error) {
 	// Read byte 1
-	if f.Header, err = ReadByte(r); err != nil {
+	if n, err = f.Header.ReadFrom(r); err != nil {
 		return 0, err
 	}
-	n++
 
 	var count int64
 	if count, err = f.Remaining.ReadFrom(r); err != nil {
