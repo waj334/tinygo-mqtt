@@ -45,11 +45,6 @@ type Suback struct {
 func (s *Suback) ReadFrom(r io.Reader) (n int64, err error) {
 	var count int64
 
-	// Fail early if no memory was allocated for reason code storage
-	if len(s.ReasonCodes) == 0 {
-		return 0, ErrControlPacketIsMalformed
-	}
-
 	/* Variable header begin */
 	if n, err = s.PacketIdentifier.ReadFrom(r); err != nil {
 		return 0, err
@@ -113,9 +108,13 @@ func (s *Suback) ReadFrom(r io.Reader) (n int64, err error) {
 	/* Properties header end */
 
 	/* Payload begin */
-	// Read the reason codes
 	{
 		var count int
+
+		// Allocate memory for storing the reason codes
+		s.ReasonCodes = make([]byte, int64(s.Header.Remaining)-n)
+
+		// Read the reason codes
 		if count, err = io.ReadFull(r, s.ReasonCodes); err != nil {
 			return 0, err
 		}

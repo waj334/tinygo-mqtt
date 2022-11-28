@@ -26,15 +26,19 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"github.com/waj334/tinygo-mqtt/mqtt"
 	"github.com/waj334/tinygo-mqtt/mqtt/packets"
+	"github.com/waj334/tinygo-mqtt/mqtt/packets/primitives"
 	"log"
+	"math/rand"
 	"net"
 	"time"
 )
 
 func main() {
 	// Open connection to test server
+	// Note: For baremetal targets, replace the following with the necessary method of acquiring a Conn.
 	conn, err := net.Dial("tcp", "test.mosquitto.org:1883")
 	if err != nil {
 		log.Fatalln(err)
@@ -43,13 +47,16 @@ func main() {
 	// Create a new client
 	client := mqtt.NewClient(conn)
 
-	// Create an event channel to be notified on by the client
+	// Create an event channel to be notified on by the client. This channel will hold at most 10 pending events.
 	events := client.CreateEventChannel(10)
+
+	// Generate random client id
+	clientId := fmt.Sprintf("super-secret-test-client-%d", rand.Int63())
 
 	// Set up a connection packet
 	connPacket := packets.Connect{
 		Version:                    packets.MQTT5,
-		ClientId:                   "super-secret-test-client",
+		ClientId:                   primitives.PrimitiveString(clientId),
 		Username:                   "not-used",
 		Password:                   "supersecurepassword",
 		WillRetain:                 false,
@@ -66,33 +73,21 @@ func main() {
 		UserProperties:             nil,
 	}
 
+	// Set a 30-second deadline for connecting
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
+
 	// Attempt to connect
-	//ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	if err = client.Connect(context.Background(), connPacket); err != nil {
-		//cancel()
+	if err = client.Connect(ctx, connPacket); err != nil {
 		log.Fatalln(err)
 	}
-	//cancel()
 
-	// Subscribe to topics
-	//ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	topic := mqtt.Topic{}
-	topic.SetFilter("/test/ping").SetQoS(packets.QoS0)
-
-	if err = client.Subscribe(context.Background(), []mqtt.Topic{
-		topic,
-	}); err != nil {
-		//cancel()
-		log.Fatalln("Subscribe error:", err)
-	}
-	//cancel()
-
-	// Use ticker to send periodic keep-alive control packets
-	ticker := time.NewTicker(client.KeepAliveInterval())
-	ticker2 := time.NewTicker(time.Second)
-
-	// Start event processing loop
+	// Start event processing
 	go func() {
+		// Use ticker to send periodic keep-alive control packets
+		ticker := time.NewTicker(client.KeepAliveInterval())
+		ticker2 := time.NewTicker(time.Second)
+
 		for {
 			select {
 			case <-ticker.C:
@@ -124,13 +119,32 @@ func main() {
 					println("Received packet:", e.PacketType)
 				}
 			default:
+				// Set a deadline of 1 second for polling for incoming messages
+				ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+
 				// Poll for incoming messages
-				if err := client.Poll(); err != nil {
+				if err := client.Poll(ctx); err != nil {
+					cancel()
 					log.Fatalf("Poll error: %v\n", err)
 				}
+				cancel()
 			}
 		}
 	}()
+
+	// Set a 30-second deadline for subscribing to topics
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
+
+	topic := mqtt.Topic{}
+	topic.SetFilter("/test/ping").SetQoS(packets.QoS0)
+
+	// Subscribe to topics
+	if err = client.Subscribe(ctx, []mqtt.Topic{
+		topic,
+	}); err != nil {
+		log.Fatalln("Subscribe error:", err)
+	}
 
 	// Loop forever
 	select {}

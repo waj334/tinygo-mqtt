@@ -45,8 +45,11 @@ type Client struct {
 	pingRespDeadline      time.Time
 	sessionExpiryInterval uint32
 
-	eventChans      map[int]chan<- *Event
-	topicChans      map[string]chan<- *Event
+	eventChans map[int]chan<- *Event
+	topicChans map[string]chan<- *Event
+
+	responseChan map[int]chan any
+
 	evChanIdCounter int
 	eventMutex      sync.Mutex
 
@@ -68,6 +71,7 @@ func NewClient(conn net.Conn) *Client {
 		conn:            conn,
 		eventChans:      make(map[int]chan<- *Event),
 		topicChans:      make(map[string]chan<- *Event),
+		responseChan:    make(map[int]chan any),
 		evChanIdCounter: 1,
 		packetIdCounter: 1, // Must start at 1
 	}
@@ -229,6 +233,12 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	return
 }
 
+// IsConnected returns true if the client is currently in the connected state. Otherwise, it returns false if the client
+// is not currently connected to a MQTT server.
+func (c *Client) IsConnected() bool {
+	return c.isConnected
+}
+
 // Disconnect sends the DISCONNECT packet to the server. The network connection will be closed upon sending the
 // DISCONNECT packet. Setting the publishWill parameter to true will require the server to publish the "Will" message if
 // one was specified initially in the CONNECT packet. The server will default session expiry interval to that of the
@@ -247,7 +257,7 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if !c.isConnected {
+	if c.isConnected {
 		return ErrClientNotConnected
 	}
 
@@ -306,7 +316,6 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 	}
 
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
 
 	if !c.isConnected {
 		return ErrClientNotConnected
@@ -337,48 +346,20 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 	}
 	c.packetIdCounter++
 
+	// Create channel to receive the response on
+	respChan := make(chan any, 1)
+	c.responseChan[int(subscribe.PacketIdentifier)] = respChan
+
 	// Send the SUBSCRIBE control packet
 	if _, err = subscribe.WriteTo(c.conn); err != nil {
 		return err
 	}
+	c.mutex.Unlock()
 
-response:
-	// Receive response header
-	header := packets.FixedHeader{}
-	if err = backoff(ctx, func() error {
-		_, err := header.ReadFrom(c.conn)
-		return err
-	}); err != nil {
-		return
-	}
-
-	// The possible responses are SUBACK, PUBLISH or DISCONNECT
-	switch header.GetType() {
-	case packets.DISCONNECT:
-		var disconnect packets.Disconnect
-		if _, err = disconnect.ReadFrom(c.conn); err != nil {
-			return err
-		}
-
-		// Close the connection
-		c.conn.Close()
-
-		// signal event channels
-		c.signal(packets.DISCONNECT, &disconnect)
-		return ReasonCode(disconnect.ReasonCode)
-	case packets.SUBACK:
-		// Create the SUBACK packet
-		suback := packets.Suback{
-			Header:      header,
-			ReasonCodes: make([]byte, len(topics)),
-		}
-		// Begin reading the SUBACK response
-		if err = backoff(ctx, func() error {
-			_, err := suback.ReadFrom(c.conn)
-			return err
-		}); err != nil {
-			return
-		}
+	// Wait for the response
+	select {
+	case resp := <-respChan:
+		suback := resp.(*packets.Suback)
 
 		// Check all reason codes
 		for i, code := range suback.ReasonCodes {
@@ -391,26 +372,21 @@ response:
 				if chanid := topics[i].channel.id; chanid != 0 {
 					// Map the event channel to the topic
 					// TODO: Should probably remove this channel from the original map
+					c.mutex.Lock()
 					c.topicChans[topics[i].Topic.Filter()] = c.eventChans[chanid]
+					c.mutex.Unlock()
 				}
 			}
 		}
-
-		// signal event channels
-		c.signal(packets.SUBACK, &suback)
-	case packets.PUBLISH:
-		// TODO: Process the publish. Remove the line below
-		c.conn.Read(make([]byte, header.Remaining))
-
-		// SPEC: The Server is permitted to start sending PUBLISH packets matching the Subscription before the
-		//       Server sends the SUBACK packet.
-
-		// signal event channels
-		//c.signal(packets.PUBLISH, publish)
-		goto response
-	default:
-		return ErrUnexpectedPacketTypeReceived
 	}
+
+	// Close the chan
+	close(respChan)
+
+	c.mutex.Lock()
+	// Remove the channel from the map
+	delete(c.responseChan, int(subscribe.PacketIdentifier))
+	c.mutex.Unlock()
 
 	return
 }
@@ -549,10 +525,7 @@ func (c *Client) KeepAlive() (err error) {
 
 // Poll polls for incoming control packets from the server. Incoming messages will be pushed to the back of the message
 // queue and a single message at the front of the queue will be processed. This function should be called repeatedly.
-func (c *Client) Poll() (err error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
+func (c *Client) Poll(ctx context.Context) (err error) {
 	if !c.isConnected {
 		return ErrClientNotConnected
 	}
@@ -574,10 +547,21 @@ func (c *Client) Poll() (err error) {
 		return
 	}
 
-	// Set I/O deadline to 10ms initially so that polling doesn't tie up the conn for too long
-	if err = c.conn.SetDeadline(time.Now().Add(time.Millisecond * 10)); err != nil {
-		return
+	var deadline time.Time
+	var ok bool
+	if deadline, ok = ctx.Deadline(); !ok {
+		deadline = time.Time{}
 	}
+
+	// Set I/O deadline
+	if err = c.conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+
+	// Set I/O deadline to 10ms initially so that polling doesn't tie up the conn for too long
+	//if err = c.conn.SetDeadline(time.Now().Add(time.Millisecond * 10)); err != nil {
+	//	return
+	//}
 
 	// Attempt to receive a control packet header
 	header := packets.FixedHeader{}
@@ -589,9 +573,14 @@ func (c *Client) Poll() (err error) {
 		return
 	}
 
-	// Extend I/O deadline
-	if err = c.conn.SetDeadline(time.Now().Add(time.Second * 30)); err != nil {
-		return
+	if !deadline.IsZero() {
+		// Extend I/O deadline
+		if err = c.conn.SetDeadline(time.Now().Add(time.Second * 30)); err != nil {
+			return
+		}
+	} else {
+		// Unset any deadline
+		c.conn.SetDeadline(time.Time{})
 	}
 
 	// Read control packet
@@ -650,6 +639,12 @@ func (c *Client) Poll() (err error) {
 		if _, err = suback.ReadFrom(c.conn); err != nil {
 			return
 		}
+
+		// Respond to the call to client.Subscribe
+		if respChan, ok := c.responseChan[int(suback.PacketIdentifier)]; ok {
+			respChan <- suback
+		}
+
 		c.signal(packets.SUBACK, suback)
 	case packets.UNSUBACK:
 		unsuback := &packets.Unsuback{}
