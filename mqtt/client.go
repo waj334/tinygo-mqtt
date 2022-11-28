@@ -38,8 +38,9 @@ import (
 )
 
 type Client struct {
-	conn  net.Conn
-	mutex sync.RWMutex
+	conn      net.Conn
+	connMutex sync.Mutex
+	mutex     sync.RWMutex
 
 	storage storage.Storage
 
@@ -208,6 +209,10 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 		deadline = time.Time{}
 	}
 
+	var unlockConn sync.Once
+	c.connMutex.Lock()
+	defer unlockConn.Do(c.connMutex.Unlock)
+
 	// Set I/O deadline
 	if err = c.conn.SetDeadline(deadline); err != nil {
 		return err
@@ -243,6 +248,7 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	}); err != nil {
 		return
 	}
+	unlockConn.Do(c.connMutex.Unlock)
 
 	// Did the server send an error response?
 	// SPEC: If a Server sends a CONNACK packet containing a Reason code of 128 or greater it MUST then close the
@@ -337,6 +343,10 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 		deadline = time.Time{}
 	}
 
+	var unlockConn sync.Once
+	c.connMutex.Lock()
+	defer unlockConn.Do(c.connMutex.Unlock)
+
 	// Set I/O deadline
 	if err = c.conn.SetDeadline(deadline); err != nil {
 		return err
@@ -369,6 +379,7 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 	if err = c.conn.Close(); err != nil {
 		return
 	}
+	unlockConn.Do(c.connMutex.Unlock)
 
 	c.isConnected = false
 
@@ -388,6 +399,10 @@ func (c *Client) disconnectWithReason(ctx context.Context, reason primitives.Pri
 	if deadline, ok = ctx.Deadline(); !ok {
 		deadline = time.Time{}
 	}
+
+	var unlockConn sync.Once
+	c.connMutex.Lock()
+	defer unlockConn.Do(c.connMutex.Unlock)
 
 	// Set I/O deadline
 	if err = c.conn.SetDeadline(deadline); err != nil {
@@ -417,6 +432,7 @@ func (c *Client) disconnectWithReason(ctx context.Context, reason primitives.Pri
 	if err = c.conn.Close(); err != nil {
 		return
 	}
+	unlockConn.Do(c.connMutex.Unlock)
 
 	c.isConnected = false
 
@@ -442,6 +458,10 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 	if deadline, ok = ctx.Deadline(); !ok {
 		deadline = time.Time{}
 	}
+
+	var unlockConn sync.Once
+	c.connMutex.Lock()
+	defer unlockConn.Do(c.connMutex.Unlock)
 
 	// Set I/O deadline
 	if err = c.conn.SetDeadline(deadline); err != nil {
@@ -473,6 +493,7 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 		c.mutex.Unlock()
 		return err
 	}
+	unlockConn.Do(c.connMutex.Unlock)
 	c.mutex.Unlock()
 
 	// Wait for the acknowledgement
@@ -595,6 +616,10 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 		deadline = time.Time{}
 	}
 
+	var unlockConn sync.Once
+	c.connMutex.Lock()
+	defer unlockConn.Do(c.connMutex.Unlock)
+
 	// Set I/O deadline
 	if err = c.conn.SetDeadline(deadline); err != nil {
 		return err
@@ -627,12 +652,16 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 	//       is zero [MQTT-4.9.0-3].
 	if c.sendQuota == 0 && pub.QoS > 0 {
 		// Delay sending this publish until one of the unacknowledged publishes is acknowledged
+		c.connMutex.Unlock()
 		c.pendingSendSemaphore <- struct{}{}
+		c.connMutex.Lock()
 	}
 	// Write the publish
 	if _, err = pub.WriteTo(c.conn); err != nil {
+
 		return
 	}
+	unlockConn.Do(c.connMutex.Unlock)
 
 	if pub.QoS > 0 {
 		c.mutex.Lock()
@@ -685,6 +714,42 @@ func (c *Client) sendPuback(ctx context.Context, publish *packets.Publish) (err 
 	return
 }
 
+// sendPubrec will send the PUBREC control packet to the server. This API is only accessible via Publish when it is
+// RECEIVED from the server during the Poll method.
+func (c *Client) sendPubrec(ctx context.Context, publish *packets.Publish) (err error) {
+	// The packet identifier MUST be set
+	if publish.PacketIdentifier == 0 {
+		return packets.ErrControlPacketIsMalformed
+	}
+
+	var deadline time.Time
+	var ok bool
+	if deadline, ok = ctx.Deadline(); !ok {
+		deadline = time.Time{}
+	}
+
+	// Set I/O deadline
+	if err = c.conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+
+	pubrec := &packets.Pubrec{
+		Puback: packets.Puback{
+			PacketIdentifier: publish.PacketIdentifier,
+		},
+	}
+
+	// Send the PUBREC control packet to the server
+	if _, err = pubrec.WriteTo(c.conn); err != nil {
+		c.mutex.RUnlock()
+		return
+	}
+
+	// No response to wait for
+
+	return
+}
+
 // KeepAliveInterval returns the interval at which frequent PINGREQ packets must be sent. The server may specify a
 // different value in the CONNACK packet than what was originally specified by the CONNECT packet.
 func (c *Client) KeepAliveInterval() time.Duration {
@@ -718,6 +783,10 @@ func (c *Client) KeepAlive() (err error) {
 		deadline = time.Time{}
 	}
 
+	var unlockConn sync.Once
+	c.connMutex.Lock()
+	defer unlockConn.Do(c.connMutex.Unlock)
+
 	// Set I/O deadline
 	if err = c.conn.SetDeadline(deadline); err != nil {
 		return err
@@ -729,6 +798,7 @@ func (c *Client) KeepAlive() (err error) {
 	if _, err = header.WriteTo(c.conn); err != nil {
 		return
 	}
+	unlockConn.Do(c.connMutex.Unlock)
 
 	// NOTE: Poll handles receiving the response and disconnecting if no response has been sent within twice the keep
 	// alive interval.
@@ -743,6 +813,9 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 	if !c.isConnected {
 		return ErrClientNotConnected
 	}
+
+	c.connMutex.Lock()
+	defer c.connMutex.Unlock()
 
 	// Check if current time is after the ping response deadline
 	// SPEC: If a Client does not receive a PINGRESP packet within a reasonable amount of time after it has sent a
@@ -823,12 +896,18 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 		}
 		c.mutex.Unlock()
 
-		// Set the acknowledgement function
-		if publish.QoS > 0 {
-			publish.SetAckFn(c.sendPuback)
+		// Send the respective acknowledgement control packet type for the QoS level of the incoming publish.
+		if publish.QoS == packets.QoS1 {
+			if err = c.sendPuback(ctx, publish); err != nil {
+				return err
+			}
+		} else if publish.QoS == packets.QoS2 {
+			if err = c.sendPubrec(ctx, publish); err != nil {
+				return err
+			}
 		}
 
-		// TODO: Route the PUBLISH to the correct event channels as configured by the Subscribe API
+		// Route the PUBLISH to the correct event channels as configured by the Subscribe API
 		for filter, channel := range c.topicChans {
 			// Does the topic match any known filter?
 			if c.matchTopic(publish.Topic.String(), filter) {
@@ -837,7 +916,18 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			}
 		}
 
-		// TODO: Perform persistence operations as required by the QoS level of this PUBLISH.
+		// Create a Pubrec control packet and store it. This might be used later during the message delivery retry flow.
+		// It will be removed when a PUBREL control packet comes in.
+		c.mutex.RLock()
+		if publish.QoS > 0 && c.storage != nil {
+			pubrec := &packets.Pubrec{
+				Puback: packets.Puback{
+					PacketIdentifier: publish.PacketIdentifier,
+				},
+			}
+			c.storage.Store(pubrec.PacketIdentifier.Value(), pubrec)
+			c.mutex.RUnlock()
+		}
 
 		c.signal(packets.PUBLISH, publish, nil)
 	case packets.PUBACK:
@@ -859,7 +949,6 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			default: // No call to Publish is pending
 			}
 		}
-		c.mutex.Unlock()
 
 		// Drop any persisted publish with the same packet identifier
 		if c.storage != nil {
@@ -867,6 +956,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 				return err
 			}
 		}
+		c.mutex.Unlock()
 
 		c.signal(packets.PUBACK, puback, nil)
 	case packets.PUBREC:
@@ -876,7 +966,39 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			return err
 		}
 
-		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
+		// Increment the send quota counter if it contains a failure reason code
+		// SPEC: Each time a PUBREC packet is received with a Return Code of 0x80 or greater.
+		c.mutex.Lock()
+		if pubrec.ReasonCode > 0x80 {
+			if c.sendQuota < c.serverReceiveMaximum {
+				c.sendQuota++
+			}
+		}
+
+		if c.storage != nil {
+			// Discard original publish from persistent storage
+			if err = c.storage.Drop(pubrec.PacketIdentifier.Value()); err != nil {
+				return err
+			}
+
+			// Store the incoming PUBREC to persistent storage
+			if err = c.storage.Store(pubrec.PacketIdentifier.Value(), pubrec); err != nil {
+				return err
+			}
+		}
+
+		// Send PUBREL control packet
+		pubrel := &packets.Pubrel{
+			Puback: packets.Puback{
+				PacketIdentifier: pubrec.PacketIdentifier,
+			},
+		}
+
+		if _, err = pubrel.WriteTo(c.conn); err != nil {
+			return err
+		}
+
+		c.mutex.Unlock()
 
 		c.signal(packets.PUBREC, pubrec, nil)
 	case packets.PUBREL:
@@ -886,7 +1008,31 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			return err
 		}
 
-		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
+		// Perform persistence operations as required by the QoS level of the related PUBLISH.
+		c.mutex.Lock()
+		if c.storage != nil {
+			// Discard original PUBREC control packet from persistent storage
+			if err = c.storage.Drop(pubrel.PacketIdentifier.Value()); err != nil {
+				return err
+			}
+		}
+		c.mutex.Unlock()
+
+		// Send PUBCOMP control packet
+		pubcomp := &packets.Pubcomp{
+			Puback: packets.Puback{
+				PacketIdentifier: pubrel.PacketIdentifier,
+			},
+		}
+
+		if _, err = pubcomp.WriteTo(c.conn); err != nil {
+			return err
+		}
+
+		// Increment receive quota counter
+		if c.receiveQuota < c.clientReceiveMaximum {
+			c.receiveQuota++
+		}
 
 		c.signal(packets.PUBREL, pubrel, nil)
 	case packets.PUBCOMP:
@@ -904,11 +1050,20 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 
 			// Potentially allow a blocked call to Publish to continue.
 			// NOTE: This is the reason why calls to Publish and Poll should not occur within the same goroutine.
-			c.pendingSendSemaphore <- struct{}{}
+			select {
+			case <-c.pendingSendSemaphore: // Unblock a pending call to Publish
+			default: // No call to Publish is pending
+			}
 		}
-		c.mutex.Unlock()
 
-		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
+		if c.storage != nil {
+			// Discard original PUBREC control packet from persistent storage
+			if err = c.storage.Drop(pubcomp.PacketIdentifier.Value()); err != nil {
+				return err
+			}
+		}
+
+		c.mutex.Unlock()
 
 		c.signal(packets.PUBCOMP, pubcomp, nil)
 	case packets.SUBACK:

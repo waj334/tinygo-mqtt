@@ -46,12 +46,33 @@ type Pubrec struct {
 	Puback
 }
 
+func (p *Pubrec) WriteTo(w io.Writer) (n int64, err error) {
+	// Override the packet type in the fixed header
+	p.Header.SetType(PUBREC)
+	return p.Puback.WriteTo(w)
+}
+
 type Pubrel struct {
 	Puback
 }
 
+func (p *Pubrel) WriteTo(w io.Writer) (n int64, err error) {
+	// Override the packet type in the fixed header
+	p.Header.SetType(PUBREL)
+
+	// Pubrel has a reserved bit set to 1 in the fixed header
+	p.Header.SetFlags(0x02)
+	return p.Puback.WriteTo(w)
+}
+
 type Pubcomp struct {
 	Puback
+}
+
+func (p *Pubcomp) WriteTo(w io.Writer) (n int64, err error) {
+	// Override the packet type in the fixed header
+	p.Header.SetType(PUBCOMP)
+	return p.Puback.WriteTo(w)
 }
 
 ////////////////
@@ -145,7 +166,11 @@ func (p *Puback) WriteTo(w io.Writer) (n int64, err error) {
 
 	variableHeaderLen += propertiesLen.Length(false) + propertiesLen
 
-	p.Header.SetType(PUBACK)
+	// Default the packet type to PUBACK if one is not set. Possible prior values could only be PUBREL, PUBREC or
+	// PUBCOMP.
+	if p.Header.GetType() == 0 {
+		p.Header.SetType(PUBACK)
+	}
 	p.Header.Remaining = variableHeaderLen
 
 	// Write the control packet

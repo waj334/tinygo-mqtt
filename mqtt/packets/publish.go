@@ -356,23 +356,3 @@ func (p *Publish) WriteTo(w io.Writer) (n int64, err error) {
 
 	return
 }
-
-// SetAckFn sets the function to be called internally by the Ack method. This method should ONLY be called internally by
-// Client when this publish is received by its Poll method.
-func (p *Publish) SetAckFn(fn func(context.Context, *Publish) error) {
-	if p.ackFn == nil {
-		p.ackFn = fn
-	}
-}
-
-// Ack will send the PUBACK control packet to the server. This method is only active when this publish has been received
-// from the server and call only be called ONCE. Any subsequent calls to this method will do nothing and return no
-// error.
-func (p *Publish) Ack(ctx context.Context) (err error) {
-	if p.ackFn != nil {
-		err = p.ackFn(ctx, p)
-		p.ackFn = nil
-	}
-
-	return
-}

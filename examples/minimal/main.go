@@ -66,11 +66,11 @@ func main() {
 	// Persist storage between connections
 	storage := memory.NewStorage()
 
-restart:
+	//restart:
 	// Open connection to test server
 	// Note: For baremetal targets, replace the following with the necessary method of acquiring a Conn.
-	conn, err := net.Dial("tcp", "broker.hivemq.com:1883")
-	//conn, err := net.Dial("tcp", "test.mosquitto.org:1883")
+	//conn, err := net.Dial("tcp", "broker.hivemq.com:1883")
+	conn, err := net.Dial("tcp", "test.mosquitto.org:1883")
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -128,8 +128,8 @@ restart:
 	// Start event processing
 	go func() {
 		// Periodically send a publish to be consumed
-		publishTicker := time.NewTicker(time.Millisecond * 10)
-		publishTicker.Stop()
+		publishTicker := time.NewTicker(time.Second)
+		//publishTicker.Stop()
 
 		for {
 			select {
@@ -138,7 +138,7 @@ restart:
 				for i := 0; i < rand.Intn(75); i++ {
 					if err = client.Publish(context.Background(), packets.Publish{
 						Retain:  false,
-						QoS:     packets.QoS1,
+						QoS:     packets.QoS2,
 						Topic:   "/test/ping",
 						Payload: []byte("pong"),
 					}); err != nil {
@@ -167,7 +167,7 @@ restart:
 						log.Printf("MQTT client has been disconnected: %2x %v", disconnect.ReasonCode, mqtt.ReasonCode(disconnect.ReasonCode))
 					case packets.SUBACK:
 						log.Println("Subscribed to topic(s)")
-						publishTicker.Reset(time.Second)
+						//publishTicker.Reset(time.Second)
 					case packets.PUBLISH:
 						pub := e.Data.(*packets.Publish)
 						log.Println("General channel received publish:", string(pub.Payload))
@@ -188,24 +188,6 @@ restart:
 						pub := e.Data.(*packets.Publish)
 						log.Println("Topic channel received publish:", string(pub.Payload))
 						log.Println("Publish topic:", pub.Topic)
-
-						// Acknowledge duplicate packets that the server has resent.
-						if pub.Duplicate {
-							log.Println("Publish is duplicate. Acknowledging it")
-							if err := pub.Ack(context.Background()); err != nil {
-								log.Println("Ack error: err")
-							}
-						} else {
-							// Test rate limiting: Acknowledge some incoming publishes. The server should stop sending when
-							//                     the client has not acknowledged too many incoming publishes.
-							now := time.Now().Unix()
-							if now%2 == 0 || now%3 == 0 || now%4 == 0 {
-								log.Println("Acknowledging random packet")
-								if err := pub.Ack(context.Background()); err != nil {
-									log.Println("Ack error: err")
-								}
-							}
-						}
 					}
 				}
 			}
@@ -219,7 +201,7 @@ restart:
 	topic := mqtt.Topic{}
 	topic.SetFilter("/test/ping").SetQoS(packets.QoS0)
 	topic.SetEventChannel(topicEvents)
-	topic.SetQoS(packets.QoS1)
+	topic.SetQoS(packets.QoS2)
 
 	// Subscribe to topics
 	if err = client.Subscribe(ctx, []mqtt.Topic{
@@ -240,7 +222,7 @@ restart:
 	//})
 
 	// QoS test: Close the conn to simulate an abrupt disconnect and restart.
-	timer := time.NewTimer(time.Second * 30)
+	/*timer := time.NewTimer(time.Second * 30)
 	select {
 	case <-timer.C:
 		// Close the conn and goto to the restart label
@@ -252,5 +234,7 @@ restart:
 		client.CloseEventChannel(topicEvents)
 
 		goto restart
-	}
+	}*/
+
+	select {}
 }
