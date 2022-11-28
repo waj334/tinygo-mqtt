@@ -77,14 +77,10 @@ func main() {
 	// Subscribe to topics
 	//ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	topic := mqtt.Topic{}
-	topic.SetFilter("a/b").SetQoS(packets.QoS1)
-
-	topic2 := mqtt.Topic{}
-	topic2.SetFilter("c/d").SetQoS(packets.QoS2)
+	topic.SetFilter("/test/ping").SetQoS(packets.QoS0)
 
 	if err = client.Subscribe(context.Background(), []mqtt.Topic{
 		topic,
-		topic2,
 	}); err != nil {
 		//cancel()
 		log.Fatalln("Subscribe error:", err)
@@ -93,6 +89,7 @@ func main() {
 
 	// Use ticker to send periodic keep-alive control packets
 	ticker := time.NewTicker(client.KeepAliveInterval())
+	ticker2 := time.NewTicker(time.Second)
 
 	// Start event processing loop
 	go func() {
@@ -102,6 +99,16 @@ func main() {
 				if err := client.KeepAlive(); err != nil {
 					log.Fatalln("Keep Alive Error:", err)
 				}
+			case <-ticker2.C:
+				// Publish a message
+				if err = client.Publish(context.Background(), packets.Publish{
+					Retain:  false,
+					QoS:     0,
+					Topic:   "/test/ping",
+					Payload: []byte("pong"),
+				}); err != nil {
+					log.Println("Publish error:", err)
+				}
 			case e := <-events.C:
 				switch e.PacketType {
 				case packets.CONNACK:
@@ -110,13 +117,16 @@ func main() {
 					log.Println("MQTT client has been disconnected")
 				case packets.SUBACK:
 					log.Println("Subscribed to topic(s)")
+				case packets.PUBLISH:
+					pub := e.Data.(*packets.Publish)
+					log.Println("Received publish:", string(pub.Payload))
 				default:
 					println("Received packet:", e.PacketType)
 				}
 			default:
 				// Poll for incoming messages
 				if err := client.Poll(); err != nil {
-					log.Printf("Poll error: %v\n", err)
+					log.Fatalf("Poll error: %v\n", err)
 				}
 			}
 		}

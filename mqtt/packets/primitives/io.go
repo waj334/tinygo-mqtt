@@ -41,17 +41,19 @@ type Primitive interface {
 // interfaces.
 //
 //go:nosplit
-func noescape(p unsafe.Pointer) unsafe.Pointer {
-	x := uintptr(p)
-	return unsafe.Pointer(x ^ 0)
-}
+//func noescape(p unsafe.Pointer) unsafe.Pointer {
+//	x := uintptr(p)
+//	return unsafe.Pointer(x ^ 0)
+//}
 
 func Read(r io.Reader, b []byte) (int, error) {
-	return r.Read(*(*[]byte)(noescape(unsafe.Pointer(&b))))
+	return r.Read(b)
+	//return r.Read(*(*[]byte)(noescape(unsafe.Pointer(&b))))
 }
 
 func Write(w io.Writer, b []byte) (int, error) {
-	return w.Write(*(*[]byte)(noescape(unsafe.Pointer(&b))))
+	return w.Write(b)
+	//return w.Write(*(*[]byte)(noescape(unsafe.Pointer(&b))))
 }
 
 //go:inline

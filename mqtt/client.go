@@ -42,6 +42,7 @@ type Client struct {
 
 	isConnected           bool
 	keepAliveInterval     time.Duration
+	pingRespDeadline      time.Time
 	sessionExpiryInterval uint32
 
 	eventChans      map[int]chan<- *Event
@@ -209,6 +210,9 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 		// Use the keep alive interval defined in the CONNECT packet
 		c.keepAliveInterval = time.Second * time.Duration(packet.KeepAlive)
 	}
+
+	// Set the ping response deadline
+	c.pingRespDeadline = time.Now().Add(c.keepAliveInterval * 2)
 
 	// Need to keep what the value of session expiry interval was in order to ensure the DISCONNECT control packet is
 	// set up correctly later.
@@ -457,7 +461,39 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 		return err
 	}
 
+	// TODO: Close event channels?
+
 	// Waiting for the acknowledgement is unnecessary
+	return
+}
+
+// Publish sends PUBLISH control packet to the server.
+func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !c.isConnected {
+		return ErrClientNotConnected
+	}
+
+	var deadline time.Time
+	var ok bool
+	if deadline, ok = ctx.Deadline(); !ok {
+		deadline = time.Time{}
+	}
+
+	// Set I/O deadline
+	if err = c.conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+
+	// TODO: Perform preflight packet persistence operations
+
+	// Write the publish
+	if _, err = pub.WriteTo(c.conn); err != nil {
+		return
+	}
+
 	return
 }
 
@@ -506,10 +542,25 @@ func (c *Client) KeepAlive() (err error) {
 		return
 	}
 
-	if err = backoff(ctx, func() error {
-		_, err := header.ReadFrom(c.conn)
-		return err
-	}); errors.Is(err, os.ErrDeadlineExceeded) {
+	// NOTE: Poll handles receiving the response and disconnecting if no response has been sent within twice the keep
+	// alive interval.
+	return
+}
+
+// Poll polls for incoming control packets from the server. Incoming messages will be pushed to the back of the message
+// queue and a single message at the front of the queue will be processed. This function should be called repeatedly.
+func (c *Client) Poll() (err error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !c.isConnected {
+		return ErrClientNotConnected
+	}
+
+	// Check if current time is after the ping response deadline
+	// SPEC: If a Client does not receive a PINGRESP packet within a reasonable amount of time after it has sent a
+	//       PINGREQ, it SHOULD close the Network Connection to the Server.
+	if time.Now().After(c.pingRespDeadline) {
 		// Likely disconnected from server. Close the connection.
 		// SPEC: [MQTT-3.1.2-22]
 		c.isConnected = false
@@ -520,24 +571,8 @@ func (c *Client) KeepAlive() (err error) {
 		// Signal synthetic DISCONNECT event
 		// TODO: Determine if this is even necessary
 		c.signal(packets.DISCONNECT, nil)
-
-		return
-	} else if err != nil {
 		return
 	}
-
-	if t := header.GetType(); t != packets.PINGRESP {
-		return ErrUnexpectedPacketTypeReceived
-	}
-
-	return
-}
-
-// Poll polls for incoming control packets from the server. Incoming messages will be pushed to the back of the message
-// queue and a single message at the front of the queue will be processed. This function should be called repeatedly.
-func (c *Client) Poll() (err error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
 
 	// Set I/O deadline to 10ms initially so that polling doesn't tie up the conn for too long
 	if err = c.conn.SetDeadline(time.Now().Add(time.Millisecond * 10)); err != nil {
@@ -555,7 +590,7 @@ func (c *Client) Poll() (err error) {
 	}
 
 	// Extend I/O deadline
-	if err = c.conn.SetDeadline(time.Now().Add(time.Second * 1)); err != nil {
+	if err = c.conn.SetDeadline(time.Now().Add(time.Second * 30)); err != nil {
 		return
 	}
 
@@ -638,8 +673,11 @@ func (c *Client) Poll() (err error) {
 			return
 		}
 		c.signal(packets.AUTH, auth)
-	default: // TODO Remove this case
-		c.conn.Read(make([]byte, header.Remaining))
+	case packets.PINGRESP:
+		// Extend the ping response deadline
+		c.pingRespDeadline = time.Now().Add(c.keepAliveInterval * 2)
+	default:
+		return ErrUnexpectedPacketTypeReceived
 	}
 
 	// TODO: Process control packet

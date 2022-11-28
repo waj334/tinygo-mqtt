@@ -173,11 +173,14 @@ func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
 	/* Properties end */
 
 	// Read the payload
-	p.Payload = make([]byte, int64(p.Header.Remaining)-n)
-	if count, err := primitives.Read(r, p.Payload); err != nil {
-		return 0, err
-	} else {
-		n += int64(count)
+	payloadLen := int64(p.Header.Remaining) - n
+	if payloadLen > 0 {
+		p.Payload = make([]byte, payloadLen)
+		if count, err := primitives.Read(r, p.Payload); err != nil {
+			return 0, err
+		} else {
+			n += int64(count)
+		}
 	}
 
 	return
@@ -185,7 +188,7 @@ func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
 
 func (p *Publish) WriteTo(w io.Writer) (n int64, err error) {
 	var flags primitives.PrimitiveByte
-	variableHeaderLen := primitives.VariableByteInt(11)
+	variableHeaderLen := primitives.VariableByteInt(0)
 	propertiesLen := primitives.VariableByteInt(0)
 	payloadLen := primitives.VariableByteInt(len(p.Payload))
 
@@ -331,10 +334,12 @@ func (p *Publish) WriteTo(w io.Writer) (n int64, err error) {
 	/* Properties end */
 
 	//Finally, write the payload
-	if count, err := primitives.Write(w, p.Payload); err != nil {
-		return 0, err
-	} else {
-		n += int64(count)
+	if len(p.Payload) > 0 {
+		if count, err := primitives.Write(w, p.Payload); err != nil {
+			return 0, err
+		} else {
+			n += int64(count)
+		}
 	}
 
 	return

@@ -77,11 +77,14 @@ func (p *PrimitiveString) ReadFrom(r io.Reader) (n int64, err error) {
 	length := binary.BigEndian.Uint16(lenBuf)
 
 	// Allocate memory for the string
-	*p = PrimitiveString(make([]byte, length))
-	if _, err = Read(r, []byte(*p)); err != nil {
+	buf := make([]byte, length)
+	if count, err := Read(r, buf); err != nil {
 		return 0, err
+	} else {
+		n += int64(count)
 	}
 
+	*p = PrimitiveString(buf)
 	return
 }
 
