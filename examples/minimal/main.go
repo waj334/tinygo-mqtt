@@ -82,6 +82,9 @@ func main() {
 		log.Fatalln(err)
 	}
 
+	// Create an additional event channel receive only the events for the subscription
+	topicEvents := client.CreateEventChannel(10)
+
 	// Start event processing
 	go func() {
 		// Use ticker to send periodic keep-alive control packets
@@ -114,9 +117,17 @@ func main() {
 					log.Println("Subscribed to topic(s)")
 				case packets.PUBLISH:
 					pub := e.Data.(*packets.Publish)
-					log.Println("Received publish:", string(pub.Payload))
+					log.Println("General channel received publish:", string(pub.Payload))
+					log.Println("Publish topic:", pub.Topic)
 				default:
 					println("Received packet:", e.PacketType)
+				}
+			case e := <-topicEvents.C:
+				switch e.PacketType {
+				case packets.PUBLISH:
+					pub := e.Data.(*packets.Publish)
+					log.Println("Topic channel received publish:", string(pub.Payload))
+					log.Println("Publish topic:", pub.Topic)
 				}
 			default:
 				// Set a deadline of 1 second for polling for incoming messages
@@ -138,6 +149,7 @@ func main() {
 
 	topic := mqtt.Topic{}
 	topic.SetFilter("/test/ping").SetQoS(packets.QoS0)
+	topic.SetEventChannel(topicEvents)
 
 	// Subscribe to topics
 	if err = client.Subscribe(ctx, []mqtt.Topic{

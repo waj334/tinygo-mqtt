@@ -117,7 +117,7 @@ func (c *Client) CloseEventChannel(eventChan EventChannel) {
 
 // signal signals on all event channels in a fanout fashion. This function is only meant to be called by the client
 // internally.
-func (c *Client) signal(packetType packets.PacketType, data any) {
+func (c *Client) signal(packetType packets.PacketType, data any, channel chan<- *Event) {
 	c.eventMutex.Lock()
 	defer c.eventMutex.Unlock()
 
@@ -126,8 +126,8 @@ func (c *Client) signal(packetType packets.PacketType, data any) {
 		Data:       data,
 	}
 
-	// Fanout
-	for _, channel := range c.eventChans {
+	if channel != nil {
+		// Signal this channel directly
 		select {
 		case channel <- e:
 			// Signalled
@@ -136,6 +136,19 @@ func (c *Client) signal(packetType packets.PacketType, data any) {
 			//       will be required that no event channel goes unconsumed. Otherwise, the tradeoff would be unconsumed
 			//       event channels will stop receiving new events when they are full.
 			// Already has a pending event. This channel will miss the current event
+		}
+	} else {
+		// Fanout to all other channels
+		for _, channel := range c.eventChans {
+			select {
+			case channel <- e:
+				// Signalled
+			default:
+				// TODO: Decide whether or not to let this goroutine block. If this goroutine is allowed to block, then it
+				//       will be required that no event channel goes unconsumed. Otherwise, the tradeoff would be unconsumed
+				//       event channels will stop receiving new events when they are full.
+				// Already has a pending event. This channel will miss the current event
+			}
 		}
 	}
 
@@ -228,7 +241,7 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	c.isConnected = true
 
 	// Signal CONNACK event
-	c.signal(packets.CONNACK, &connack)
+	c.signal(packets.CONNACK, &connack, nil)
 
 	return
 }
@@ -303,7 +316,7 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 	c.isConnected = false
 
 	// Signal disconnect
-	c.signal(packets.DISCONNECT, &disconnect)
+	c.signal(packets.DISCONNECT, &disconnect, nil)
 
 	return nil
 }
@@ -371,9 +384,11 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 
 				if chanid := topics[i].channel.id; chanid != 0 {
 					// Map the event channel to the topic
-					// TODO: Should probably remove this channel from the original map
 					c.mutex.Lock()
 					c.topicChans[topics[i].Topic.Filter()] = c.eventChans[chanid]
+
+					// Remove this channel from the general event channel map
+					delete(c.eventChans, chanid)
 					c.mutex.Unlock()
 				}
 			}
@@ -543,7 +558,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 
 		// Signal synthetic DISCONNECT event
 		// TODO: Determine if this is even necessary
-		c.signal(packets.DISCONNECT, nil)
+		c.signal(packets.DISCONNECT, nil, nil)
 		return
 	}
 
@@ -592,9 +607,17 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 		}
 
 		// TODO: Route the PUBLISH to the correct event channels as configured by the Subscribe API
+		for filter, channel := range c.topicChans {
+			// Does the topic match any known filter?
+			if c.matchTopic(publish.Topic.String(), filter) {
+				// Signal the publish on this channel
+				c.signal(packets.PUBLISH, publish, channel)
+			}
+		}
+
 		// TODO: Perform persistence operations as required by the QoS level of this PUBLISH.
 
-		c.signal(packets.PUBLISH, publish)
+		c.signal(packets.PUBLISH, publish, nil)
 	case packets.PUBACK:
 		puback := &packets.Puback{Header: header}
 		if _, err = puback.ReadFrom(c.conn); err != nil {
@@ -603,7 +626,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 
 		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
 
-		c.signal(packets.PUBACK, puback)
+		c.signal(packets.PUBACK, puback, nil)
 	case packets.PUBREC:
 		pubrec := &packets.Pubrec{}
 		pubrec.Header = header
@@ -613,7 +636,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 
 		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
 
-		c.signal(packets.PUBREC, pubrec)
+		c.signal(packets.PUBREC, pubrec, nil)
 	case packets.PUBREL:
 		pubrel := &packets.Pubrel{}
 		pubrel.Header = header
@@ -623,7 +646,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 
 		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
 
-		c.signal(packets.PUBREL, pubrel)
+		c.signal(packets.PUBREL, pubrel, nil)
 	case packets.PUBCOMP:
 		pubcomp := &packets.Pubcomp{}
 		pubcomp.Header = header
@@ -633,7 +656,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 
 		// TODO: Perform persistence operations as required by the QoS level of the related PUBLISH.
 
-		c.signal(packets.PUBCOMP, pubcomp)
+		c.signal(packets.PUBCOMP, pubcomp, nil)
 	case packets.SUBACK:
 		suback := &packets.Suback{Header: header}
 		if _, err = suback.ReadFrom(c.conn); err != nil {
@@ -645,13 +668,13 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			respChan <- suback
 		}
 
-		c.signal(packets.SUBACK, suback)
+		c.signal(packets.SUBACK, suback, nil)
 	case packets.UNSUBACK:
 		unsuback := &packets.Unsuback{}
 		if _, err = unsuback.ReadFrom(c.conn); err != nil {
 			return
 		}
-		c.signal(packets.UNSUBACK, unsuback)
+		c.signal(packets.UNSUBACK, unsuback, nil)
 	case packets.DISCONNECT:
 		disconnect := &packets.Disconnect{Header: header}
 		if _, err = disconnect.ReadFrom(c.conn); err != nil {
@@ -661,13 +684,13 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 		if err = c.conn.Close(); err != nil {
 			return
 		}
-		c.signal(packets.DISCONNECT, disconnect)
+		c.signal(packets.DISCONNECT, disconnect, nil)
 	case packets.AUTH:
 		auth := &packets.Auth{Header: header}
 		if _, err = auth.ReadFrom(c.conn); err != nil {
 			return
 		}
-		c.signal(packets.AUTH, auth)
+		c.signal(packets.AUTH, auth, nil)
 	case packets.PINGRESP:
 		// Extend the ping response deadline
 		c.pingRespDeadline = time.Now().Add(c.keepAliveInterval * 2)
@@ -678,4 +701,68 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 	// TODO: Process control packet
 
 	return nil
+}
+
+// matchTopic returns true if the input topic string matches the topic filter string. Otherwise, it returns false.
+func (c *Client) matchTopic(topic, filter string) bool {
+	// TODO: Support matching for shared topics
+	var filterPos int
+	var topicPos int
+	for filterPos < len(filter) {
+		if filter[filterPos] == '#' {
+			// Encountered multi-level wildcard.
+
+			// Quick path
+			if len(filter) == 1 {
+				return true
+			}
+
+			// Look around the wildcard
+			if (filterPos != 0 && filter[filterPos-1] != '/') || filterPos != len(filter)-1 {
+				// Invalid use of # wildcard. Do attempt to match the filter any further
+				return false
+			}
+
+			// Stop and return true
+			return true
+		} else if filter[filterPos] == '+' {
+			// Encountered single-level wildcard
+
+			// Look around the wildcard
+			if (filterPos != 0 && filter[filterPos-1] != '/') || (filterPos != len(filter)-1 && filter[filterPos+1] != '/') {
+				// Invalid use of + wildcard. Do attempt to match the filter any further
+				return false
+			}
+
+			// Fast-forward the topic position to the beginning of the next level
+			for topicPos < len(topic) && topic[topicPos] != '/' {
+				topicPos++
+			}
+
+			if topicPos == len(topic) {
+				// No levels left. Return true.
+				return true
+			}
+
+			// Advance the filter pos and continue at the beginning of the loop
+			filterPos++
+			continue
+		} else if filterPos >= len(topic) {
+			// The length of the filter exceeded the length of the topic. No way these can match.
+			return false
+		} else if filter[filterPos] != topic[topicPos] {
+			return false
+		}
+
+		filterPos++
+		topicPos++
+	}
+
+	// Check if there is more characters in the topic that went unprocessed
+	if len(filter) != len(topic) && topicPos < len(topic) {
+		// Topic couldn't have matched the filter
+		return false
+	}
+
+	return true
 }
