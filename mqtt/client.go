@@ -27,6 +27,7 @@ package mqtt
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"net"
 	"os"
 	"sync"
@@ -60,10 +61,10 @@ type Client struct {
 	evChanIdCounter int
 	eventMutex      sync.Mutex
 
-	packetIdCounter int
-
 	sendQuota    uint16
 	receiveQuota uint16
+
+	rngFn func() uint32
 
 	pendingSendSemaphore chan struct{}
 }
@@ -85,7 +86,7 @@ func NewClient(conn net.Conn) *Client {
 		topicChans:      make(map[string]EventChannel),
 		responseChan:    make(map[int]chan any),
 		evChanIdCounter: 1,
-		packetIdCounter: 1, // Must start at 1
+		rngFn:           rand.Uint32,
 	}
 }
 
@@ -97,6 +98,12 @@ func (c *Client) SetStorage(storage storage.Storage) {
 	defer c.eventMutex.Unlock()
 
 	c.storage = storage
+}
+
+// SetRngFn set the random number generator function that will be used to generate random packet identifiers. The
+// default is rand.Uint32.
+func (c *Client) SetRngFn(fn func() uint32) {
+	c.rngFn = fn
 }
 
 // CreateEventChannel creates an event channel struct that the client will use to notify when events (connect,
@@ -475,14 +482,13 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 
 	c.mutex.Lock()
 	subscribe := packets.Subscribe{
-		PacketIdentifier: primitives.PrimitiveUint16(c.packetIdCounter),
+		PacketIdentifier: primitives.PrimitiveUint16(c.rngFn()),
 		Topics:           _topics,
 
 		// TODO: Use context to set these optional parameters
 		//SubscriptionIdentifier: 0,
 		//UserProperties:         nil,
 	}
-	c.packetIdCounter++
 
 	// Create channel to receive the response on
 	respChan := make(chan any, 1)
@@ -565,13 +571,12 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 		_topics = append(_topics, t)
 	}
 	unsubscribe := packets.Unsubscribe{
-		PacketIdentifier: primitives.PrimitiveUint16(c.packetIdCounter),
+		PacketIdentifier: primitives.PrimitiveUint16(c.rngFn()),
 		Topics:           _topics,
 
 		// TODO: Use context to set these optional parameters
 		//UserProperties:         nil,
 	}
-	c.packetIdCounter++
 
 	// Create channel to receive the response on
 	respChan := make(chan any, 1)
@@ -630,8 +635,7 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 		// Assign a packet identifier if none is set
 		c.mutex.Lock()
 		if pub.PacketIdentifier == 0 {
-			pub.PacketIdentifier = primitives.PrimitiveUint16(c.packetIdCounter)
-			c.packetIdCounter++
+			pub.PacketIdentifier = primitives.PrimitiveUint16(c.rngFn())
 		}
 
 		if c.storage != nil {

@@ -39,8 +39,10 @@ import (
 )
 
 func main() {
-	// Generate random client id
+	// Call rand.Seed to initialize the client's default random number generator
 	rand.Seed(time.Now().UnixNano())
+
+	// Generate random client id
 	clientId := fmt.Sprintf("super-secret-test-client-%d", rand.Int63())
 
 	// Set up a connection packet
@@ -66,7 +68,8 @@ func main() {
 	// Persist storage between connections
 	storage := memory.NewStorage()
 
-	//restart:
+restart:
+
 	// Open connection to test server
 	// Note: For baremetal targets, replace the following with the necessary method of acquiring a Conn.
 	//conn, err := net.Dial("tcp", "broker.hivemq.com:1883")
@@ -135,7 +138,7 @@ func main() {
 			select {
 			case <-publishTicker.C:
 				// Publish a random number of messages all at once
-				for i := 0; i < rand.Intn(75); i++ {
+				for i := 0; i < rand.Intn(15); i++ {
 					if err = client.Publish(context.Background(), packets.Publish{
 						Retain:  false,
 						QoS:     packets.QoS2,
@@ -222,7 +225,7 @@ func main() {
 	//})
 
 	// QoS test: Close the conn to simulate an abrupt disconnect and restart.
-	/*timer := time.NewTimer(time.Second * 30)
+	timer := time.NewTimer(time.Second * 30)
 	select {
 	case <-timer.C:
 		// Close the conn and goto to the restart label
@@ -234,7 +237,7 @@ func main() {
 		client.CloseEventChannel(topicEvents)
 
 		goto restart
-	}*/
+	}
 
 	select {}
 }
