@@ -641,6 +641,7 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 		if c.storage != nil {
 			// Store this publish control packet
 			if err = c.storage.Store(uint16(pub.PacketIdentifier), pub); err != nil {
+				c.mutex.Unlock()
 				return err
 			}
 		}
@@ -700,13 +701,10 @@ func (c *Client) sendPuback(ctx context.Context, publish *packets.Publish) (err 
 		PacketIdentifier: publish.PacketIdentifier,
 	}
 
-	c.mutex.RLock()
 	// Send the PUBACK control packet to the server
 	if _, err = puback.WriteTo(c.conn); err != nil {
-		c.mutex.RUnlock()
 		return
 	}
-	c.mutex.RUnlock()
 
 	// Increment the receive quota counter so that more publishes (QoS > 0) can be received
 	c.mutex.Lock()
@@ -745,7 +743,6 @@ func (c *Client) sendPubrec(ctx context.Context, publish *packets.Publish) (err 
 
 	// Send the PUBREC control packet to the server
 	if _, err = pubrec.WriteTo(c.conn); err != nil {
-		c.mutex.RUnlock()
 		return
 	}
 
@@ -930,8 +927,8 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 				},
 			}
 			c.storage.Store(pubrec.PacketIdentifier.Value(), pubrec)
-			c.mutex.RUnlock()
 		}
+		c.mutex.RUnlock()
 
 		c.signal(packets.PUBLISH, publish, nil)
 	case packets.PUBACK:
