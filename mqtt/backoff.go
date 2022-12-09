@@ -26,6 +26,7 @@ package mqtt
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
 	"math/rand"
@@ -42,7 +43,7 @@ func backoff(ctx context.Context, fn func() error) error {
 		case <-ctx.Done():
 			return os.ErrDeadlineExceeded
 		default:
-			if err := fn(); err == io.EOF {
+			if err := fn(); errors.Is(err, io.EOF) {
 				// Backoff
 				backoff = rand.Int63n(1000) + int64(math.Pow(2, exponent)*10)
 				exponent++

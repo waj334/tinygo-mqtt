@@ -54,11 +54,13 @@ func (p *PrimitiveByte) WriteToAsProperty(identifier byte, w io.Writer) (n int64
 }
 
 func (p *PrimitiveByte) ReadFrom(r io.Reader) (n int64, err error) {
-	bb := (*byte)(p)
-	if *bb, err = ReadByte(r); err != nil {
+	var b byte
+	if b, err = ReadByte(r); err != nil {
 		return 0, err
 	}
 	n = 1
+
+	*p = PrimitiveByte(b)
 
 	return
 }

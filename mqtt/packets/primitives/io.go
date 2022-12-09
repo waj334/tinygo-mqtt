@@ -37,34 +37,15 @@ type Primitive interface {
 	Length(property bool) VariableByteInt
 }
 
-// NOTE: Borrowed from strings.Builder implementation. This is meant to avoid escape analysis when using Reader/Writer
-// interfaces.
-//
-//go:nosplit
-//func noescape(p unsafe.Pointer) unsafe.Pointer {
-//	x := uintptr(p)
-//	return unsafe.Pointer(x ^ 0)
-//}
-
-func Read(r io.Reader, b []byte) (int, error) {
-	return r.Read(b)
-	//return r.Read(*(*[]byte)(noescape(unsafe.Pointer(&b))))
-}
-
-func Write(w io.Writer, b []byte) (int, error) {
-	return w.Write(b)
-	//return w.Write(*(*[]byte)(noescape(unsafe.Pointer(&b))))
-}
-
 //go:inline
 func WriteByte(b byte, w io.Writer) error {
-	_, err := Write(w, unsafe.Slice(&b, 1))
+	_, err := w.Write(unsafe.Slice(&b, 1))
 	return err
 }
 
 //go:inline
 func ReadByte(r io.Reader) (b byte, err error) {
-	_, err = Read(r, unsafe.Slice(&b, 1))
+	_, err = r.Read(unsafe.Slice(&b, 1))
 	return
 }
 
@@ -72,7 +53,7 @@ func ReadByte(r io.Reader) (b byte, err error) {
 func WriteUint16(val uint16, w io.Writer) (err error) {
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(&val)), 2)
 	binary.BigEndian.PutUint16(buf, val)
-	_, err = Write(w, buf)
+	_, err = w.Write(buf)
 	return
 }
 
@@ -80,6 +61,6 @@ func WriteUint16(val uint16, w io.Writer) (err error) {
 func WriteUint32(val uint32, w io.Writer) (err error) {
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(&val)), 4)
 	binary.BigEndian.PutUint32(buf, val)
-	_, err = Write(w, buf)
+	_, err = w.Write(buf)
 	return
 }

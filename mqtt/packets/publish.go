@@ -188,7 +188,7 @@ func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
 	payloadLen := int64(p.Header.Remaining) - n
 	if payloadLen > 0 {
 		p.Payload = make([]byte, payloadLen)
-		if count, err := primitives.Read(r, p.Payload); err != nil {
+		if count, err := r.Read(p.Payload); err != nil {
 			return 0, err
 		} else {
 			n += int64(count)
@@ -347,7 +347,7 @@ func (p *Publish) WriteTo(w io.Writer) (n int64, err error) {
 
 	//Finally, write the payload
 	if len(p.Payload) > 0 {
-		if count, err := primitives.Write(w, p.Payload); err != nil {
+		if count, err := w.Write(p.Payload); err != nil {
 			return 0, err
 		} else {
 			n += int64(count)

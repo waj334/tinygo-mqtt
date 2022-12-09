@@ -60,7 +60,7 @@ func (p *PrimitiveUint16) ReadFrom(r io.Reader) (n int64, err error) {
 	buf := make([]byte, 2)
 
 	var count int
-	if count, err = Read(r, buf); err != nil {
+	if count, err = r.Read(buf); err != nil {
 		return 0, err
 	} else if count != 2 {
 		return 0, io.ErrUnexpectedEOF

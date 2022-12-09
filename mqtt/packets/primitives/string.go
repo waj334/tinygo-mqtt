@@ -39,7 +39,7 @@ func (p *PrimitiveString) WriteTo(w io.Writer) (n int64, err error) {
 	n += 2
 
 	// Write the string
-	count, err := Write(w, []byte(*p))
+	count, err := w.Write([]byte(*p))
 	if err != nil {
 		return 0, err
 	}
@@ -68,7 +68,7 @@ func (p *PrimitiveString) ReadFrom(r io.Reader) (n int64, err error) {
 
 	// Read byte-by-byte to avoid heap escape
 	var count int
-	if count, err = Read(r, lenBuf); err != nil {
+	if count, err = r.Read(lenBuf); err != nil {
 		return 0, err
 	}
 	n += int64(count)
@@ -78,7 +78,7 @@ func (p *PrimitiveString) ReadFrom(r io.Reader) (n int64, err error) {
 
 	// Allocate memory for the string
 	buf := make([]byte, length)
-	if count, err := Read(r, buf); err != nil {
+	if count, err := r.Read(buf); err != nil {
 		return 0, err
 	} else {
 		n += int64(count)

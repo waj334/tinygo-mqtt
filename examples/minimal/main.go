@@ -46,7 +46,7 @@ func main() {
 	clientId := fmt.Sprintf("super-secret-test-client-%d", rand.Int63())
 
 	// Set up a connection packet
-	connectPacket := packets.Connect{
+	connectPacket := &packets.Connect{
 		Version:                    packets.MQTT5,
 		ClientId:                   primitives.PrimitiveString(clientId),
 		Username:                   "not-used",
@@ -141,7 +141,7 @@ restart:
 				for i := 0; i < rand.Intn(15); i++ {
 					if err = client.Publish(context.Background(), packets.Publish{
 						Retain:  false,
-						QoS:     packets.QoS2,
+						QoS:     packets.QoS0,
 						Topic:   "/test/ping",
 						Payload: []byte("pong"),
 					}); err != nil {
@@ -202,9 +202,9 @@ restart:
 	defer cancel()
 
 	topic := mqtt.Topic{}
-	topic.SetFilter("/test/ping").SetQoS(packets.QoS0)
+	topic.SetFilter("/test/ping").
+		SetQoS(packets.QoS0)
 	topic.SetEventChannel(topicEvents)
-	topic.SetQoS(packets.QoS2)
 
 	// Subscribe to topics
 	if err = client.Subscribe(ctx, []mqtt.Topic{

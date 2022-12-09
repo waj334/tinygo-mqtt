@@ -206,7 +206,7 @@ func (c *Client) signal(packetType packets.PacketType, data any, channel chan<- 
 
 // Connect sends the CONNECT packet to the server and waits for the server to send the acknowledgement (CONNACK) packet
 // back to the client. If the acknowledgement contains a failure reason, then a ReasonCode error is returned.
-func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error) {
+func (c *Client) Connect(ctx context.Context, packet *packets.Connect) (err error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -232,11 +232,8 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 
 	// Receive response header
 	header := packets.FixedHeader{}
-	if err = backoff(ctx, func() error {
-		_, err := header.ReadFrom(c.conn)
+	if _, err = header.ReadFrom(c.conn); err != nil {
 		return err
-	}); err != nil {
-		return
 	}
 
 	// Response must be CONNACK
@@ -245,16 +242,15 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	}
 
 	// Create the Connack packet
-	connack := packets.Connack{
+	connack := &packets.Connack{
 		Header: header,
 	}
-	// Begin reading the CONNACK response
-	if err = backoff(ctx, func() error {
-		_, err := connack.ReadFrom(c.conn)
+
+	// Receive the CONNACK response
+	if _, err = connack.ReadFrom(c.conn); err != nil {
 		return err
-	}); err != nil {
-		return
 	}
+
 	unlockConn.Do(c.connMutex.Unlock)
 
 	// Did the server send an error response?
@@ -311,7 +307,7 @@ func (c *Client) Connect(ctx context.Context, packet packets.Connect) (err error
 	c.isConnected = true
 
 	// Signal CONNACK event
-	c.signal(packets.CONNACK, &connack, nil)
+	c.signal(packets.CONNACK, connack, nil)
 
 	return
 }
@@ -359,7 +355,7 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 		return err
 	}
 
-	disconnect := packets.Disconnect{}
+	disconnect := &packets.Disconnect{}
 
 	if publishWill {
 		// Set the reason code to 0x04
@@ -391,7 +387,7 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 	c.isConnected = false
 
 	// Signal disconnect
-	c.signal(packets.DISCONNECT, &disconnect, nil)
+	c.signal(packets.DISCONNECT, disconnect, nil)
 
 	return nil
 }
@@ -416,7 +412,7 @@ func (c *Client) disconnectWithReason(ctx context.Context, reason primitives.Pri
 		return err
 	}
 
-	disconnect := packets.Disconnect{
+	disconnect := &packets.Disconnect{
 		ReasonCode: reason,
 	}
 
@@ -444,7 +440,7 @@ func (c *Client) disconnectWithReason(ctx context.Context, reason primitives.Pri
 	c.isConnected = false
 
 	// Signal disconnect
-	c.signal(packets.DISCONNECT, &disconnect, nil)
+	c.signal(packets.DISCONNECT, disconnect, nil)
 
 	return
 }
@@ -829,10 +825,8 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			return err
 		}
 
-		// Signal synthetic DISCONNECT event
-		// TODO: Determine if this is even necessary
-		c.signal(packets.DISCONNECT, nil, nil)
-		return
+		// Return keep alive timeout error
+		return ReasonCode(0x8D)
 	}
 
 	var deadline time.Time

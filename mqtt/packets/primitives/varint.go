@@ -73,7 +73,7 @@ func (v *VariableByteInt) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 
-	n, err := Write(w, output)
+	n, err := w.Write(output)
 	if err != nil {
 		return 0, err
 	}

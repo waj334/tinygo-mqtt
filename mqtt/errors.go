@@ -60,15 +60,37 @@ func (r ReasonCode) Error() string {
 		return "server busy"
 	case 0x8A:
 		return "banned"
+	case 0x8B:
+		return "server shutting down"
 	case 0x8C:
 		return "bad authentication method"
+	case 0x8D:
+		return "keep Alive timeout"
+	case 0x8E:
+		return "session taken over"
+	case 0x8F:
+		return "topic Filter invalid"
 	case 0x90:
 		return "topic name invalid"
+	case 0x91:
+		return "packet Identifier in use"
+	case 0x92:
+		return "packet Identifier not found"
+	case 0x93:
+		return "receive Maximum exceeded"
+	case 0x94:
+		return "topic Alias invalid"
 	case 0x95:
 		return "packet too large"
+	case 0x96:
+		return "message rate too high"
 	case 0x97:
 		return "quota exceeded"
+	case 0x98:
+		return "administrative action"
 	case 0x99:
+		return "retain not supported"
+	case 0x9A:
 		return "retain not supported"
 	case 0x9B:
 		return "qos not supported"
@@ -76,6 +98,8 @@ func (r ReasonCode) Error() string {
 		return "use another server"
 	case 0x9D:
 		return "server moved"
+	case 0x9E:
+		return "shared Subscriptions not supported"
 	case 0x9F:
 		return "connection rate exceeded"
 	case 0xA0:
