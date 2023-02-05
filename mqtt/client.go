@@ -1,7 +1,7 @@
 /*
  * MIT License
  *
- * Copyright (c) 2022-2022 waj334
+ * Copyright (c) 2022-2023 waj334
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,8 +25,10 @@
 package mqtt
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math/rand"
 	"net"
 	"os"
@@ -226,7 +228,7 @@ func (c *Client) Connect(ctx context.Context, packet *packets.Connect) (err erro
 	}
 
 	// Send connect packet
-	if _, err = packet.WriteTo(c.conn); err != nil {
+	if err = c.send(packet); err != nil {
 		return err
 	}
 
@@ -372,8 +374,8 @@ func (c *Client) DisconnectWithSessionExpiry(ctx context.Context, publishWill bo
 	}
 
 	// Send the DISCONNECT packet to the server
-	if _, err = disconnect.WriteTo(c.conn); err != nil {
-		return
+	if err = c.send(disconnect); err != nil {
+		return err
 	}
 
 	// Close the connection to the server
@@ -425,8 +427,8 @@ func (c *Client) disconnectWithReason(ctx context.Context, reason primitives.Pri
 	//}
 
 	// Send the DISCONNECT packet to the server
-	if _, err = disconnect.WriteTo(c.conn); err != nil {
-		return
+	if err = c.send(disconnect); err != nil {
+		return err
 	}
 
 	// Close the connection to the server
@@ -477,7 +479,7 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 	}
 
 	c.mutex.Lock()
-	subscribe := packets.Subscribe{
+	subscribe := &packets.Subscribe{
 		PacketIdentifier: primitives.PrimitiveUint16(c.rngFn()),
 		Topics:           _topics,
 
@@ -491,10 +493,11 @@ func (c *Client) Subscribe(ctx context.Context, topics []Topic) (err error) {
 	c.responseChan[int(subscribe.PacketIdentifier)] = respChan
 
 	// Send the SUBSCRIBE control packet
-	if _, err = subscribe.WriteTo(c.conn); err != nil {
+	if err = c.send(subscribe); err != nil {
 		c.mutex.Unlock()
 		return err
 	}
+
 	unlockConn.Do(c.connMutex.Unlock)
 	c.mutex.Unlock()
 
@@ -566,7 +569,7 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 		t.SetFilter(topics[index])
 		_topics = append(_topics, t)
 	}
-	unsubscribe := packets.Unsubscribe{
+	unsubscribe := &packets.Unsubscribe{
 		PacketIdentifier: primitives.PrimitiveUint16(c.rngFn()),
 		Topics:           _topics,
 
@@ -579,9 +582,10 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 	c.responseChan[int(unsubscribe.PacketIdentifier)] = respChan
 
 	// Send the UNSUBSCRIBE control packet
-	if _, err = unsubscribe.WriteTo(c.conn); err != nil {
+	if err = c.send(unsubscribe); err != nil {
 		return err
 	}
+
 	c.mutex.Unlock()
 
 	// Wait for the acknowledgement
@@ -606,7 +610,7 @@ func (c *Client) Unsubscribe(ctx context.Context, topics []string) (err error) {
 }
 
 // Publish sends PUBLISH control packet to the server.
-func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
+func (c *Client) Publish(ctx context.Context, pub *packets.Publish) (err error) {
 	if !c.isConnected {
 		return ErrClientNotConnected
 	}
@@ -658,10 +662,10 @@ func (c *Client) Publish(ctx context.Context, pub packets.Publish) (err error) {
 		c.connMutex.Lock()
 	}
 	// Write the publish
-	if _, err = pub.WriteTo(c.conn); err != nil {
-
-		return
+	if err = c.send(pub); err != nil {
+		return err
 	}
+
 	unlockConn.Do(c.connMutex.Unlock)
 
 	if pub.QoS > 0 {
@@ -698,8 +702,8 @@ func (c *Client) sendPuback(ctx context.Context, publish *packets.Publish) (err 
 	}
 
 	// Send the PUBACK control packet to the server
-	if _, err = puback.WriteTo(c.conn); err != nil {
-		return
+	if err = c.send(puback); err != nil {
+		return err
 	}
 
 	// Increment the receive quota counter so that more publishes (QoS > 0) can be received
@@ -738,8 +742,8 @@ func (c *Client) sendPubrec(ctx context.Context, publish *packets.Publish) (err 
 	}
 
 	// Send the PUBREC control packet to the server
-	if _, err = pubrec.WriteTo(c.conn); err != nil {
-		return
+	if err = c.send(pubrec); err != nil {
+		return err
 	}
 
 	// No response to wait for
@@ -790,11 +794,13 @@ func (c *Client) KeepAlive() (err error) {
 	}
 
 	// Send the PINGREQ control packet
-	header := packets.FixedHeader{}
+	header := &packets.FixedHeader{}
 	header.SetType(packets.PINGREQ)
-	if _, err = header.WriteTo(c.conn); err != nil {
-		return
+
+	if err = c.send(header); err != nil {
+		return err
 	}
+
 	unlockConn.Do(c.connMutex.Unlock)
 
 	// NOTE: Poll handles receiving the response and disconnecting if no response has been sent within twice the keep
@@ -989,7 +995,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			},
 		}
 
-		if _, err = pubrel.WriteTo(c.conn); err != nil {
+		if err = c.send(pubrel); err != nil {
 			return err
 		}
 
@@ -1020,7 +1026,7 @@ func (c *Client) Poll(ctx context.Context) (err error) {
 			},
 		}
 
-		if _, err = pubcomp.WriteTo(c.conn); err != nil {
+		if err = c.send(pubcomp); err != nil {
 			return err
 		}
 
@@ -1175,4 +1181,21 @@ func (c *Client) matchTopic(topic, filter string) bool {
 	}
 
 	return true
+}
+
+func (c *Client) send(w io.WriterTo) (err error) {
+	// Allocate a new buffer
+	buf := bytes.NewBuffer(make([]byte, 0, 128))
+
+	// Write to the buffer
+	if _, err = w.WriteTo(buf); err != nil {
+		return err
+	}
+
+	// Finally, write to the open connection
+	if _, err = c.conn.Write(buf.Bytes()); err != nil {
+		return err
+	}
+
+	return nil
 }
