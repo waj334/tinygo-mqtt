@@ -1,7 +1,7 @@
 /*
  * MIT License
  *
- * Copyright (c) 2022 waj334
+ * Copyright (c) 2022-2023 waj334
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,10 @@
 
 package primitives
 
-import "io"
+import (
+	"errors"
+	"io"
+)
 
 type VariableByteInt uint32
 
@@ -51,64 +54,61 @@ func (v *VariableByteInt) Length(property bool) (result VariableByteInt) {
 
 func (v *VariableByteInt) WriteTo(w io.Writer) (int64, error) {
 	result := make([]byte, 0, 4)
-	var output []byte
-	i := 0
+	tmp := uint32(*v)
 
 	for {
-		digit := byte(*v % 128)
-		*v /= 128
-		if *v > 0 {
-			digit |= 0x80
+		b := byte(tmp % 128)
+		tmp /= 128
+		if tmp > 0 {
+			b = b | 0x80
 		}
-
-		// Re-slice result to make room for the additional byte
-		output = result[:i+1]
-
-		// Set the byte
-		output[i] = digit
-		i++
-
-		if *v == 0 {
+		result = append(result, b)
+		if tmp <= 0 {
 			break
 		}
 	}
 
-	n, err := w.Write(output)
-	if err != nil {
-		return 0, err
-	}
+	count, err := w.Write(result)
 
-	return int64(n), nil
+	return int64(count), err
 }
 
 func (v *VariableByteInt) WriteToAsProperty(identifier byte, w io.Writer) (n int64, err error) {
-	if err = WriteByte(identifier, w); err != nil {
+	if _, err = w.Write([]byte{identifier}); err != nil {
 		return 0, err
 	}
 
-	if _, err = v.WriteTo(w); err != nil {
+	if n, err = v.WriteTo(w); err != nil {
 		return 0, err
 	}
-	n = 2
+	n++
 
 	return
 }
 
 func (v *VariableByteInt) ReadFrom(r io.Reader) (n int64, err error) {
-	var multiplier uint32
-	for multiplier < 27 { // fix: Infinite '(digit & 128) == 1' will cause the dead loop
-		var digit byte
-		if digit, err = ReadByte(r); err != nil {
+	var mul uint32
+	var val uint32
+
+	for {
+		var b [1]byte
+		if _, err = r.Read(b[:]); err != nil {
 			return 0, err
 		}
 		n++
 
-		*v |= VariableByteInt(digit&127) << multiplier
-		if (digit & 128) == 0 {
+		val |= uint32(b[0]&127) << mul
+		if val > 268_435_455 {
+			return 0, errors.New("malformed variable byte integer")
+		}
+
+		if b[0]&128 == 0 {
 			break
 		}
-		multiplier += 7
+
+		mul += 7
 	}
 
+	*v = VariableByteInt(val)
 	return
 }

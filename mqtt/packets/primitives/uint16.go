@@ -1,7 +1,7 @@
 /*
  * MIT License
  *
- * Copyright (c) 2022 waj334
+ * Copyright (c) 2022-2023 waj334
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,41 +32,28 @@ import (
 type PrimitiveUint16 uint16
 
 func (p *PrimitiveUint16) WriteTo(w io.Writer) (n int64, err error) {
-	// Write the length of the string
-	if err = WriteUint16(uint16(*p), w); err != nil {
+	if err = binary.Write(w, binary.BigEndian, uint16(*p)); err != nil {
 		return 0, err
 	}
-	n = 1
-
-	return
+	return 2, nil
 }
 
 func (p *PrimitiveUint16) WriteToAsProperty(identifier byte, w io.Writer) (n int64, err error) {
-	if err = WriteByte(identifier, w); err != nil {
+	if _, err = w.Write([]byte{identifier}); err != nil {
 		return 0, err
 	}
 
-	if n, err = p.WriteTo(w); err != nil {
+	if _, err = p.WriteTo(w); err != nil {
 		return 0, err
 	}
 
-	// Account for writing identifier byte
-	n++
-
-	return
+	return 3, nil
 }
 
 func (p *PrimitiveUint16) ReadFrom(r io.Reader) (n int64, err error) {
-	buf := make([]byte, 2)
-
-	var count int
-	if count, err = r.Read(buf); err != nil {
+	if err = binary.Read(r, binary.BigEndian, (*uint16)(p)); err != nil {
 		return 0, err
-	} else if count != 2 {
-		return 0, io.ErrUnexpectedEOF
 	}
-
-	*p = PrimitiveUint16(binary.BigEndian.Uint16(buf))
 	return 2, nil
 }
 

@@ -1,7 +1,7 @@
 /*
  * MIT License
  *
- * Copyright (c) 2022 waj334
+ * Copyright (c) 2022-2023 waj334
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -87,7 +87,7 @@ func (p *Publish) Reset() {
 }
 
 func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
-	var count int64
+	var count, offset int64
 
 	// Read the header from the reader if it has not been initialized
 	if p.Header.GetType() == 0 {
@@ -95,6 +95,7 @@ func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
 			return
 		}
 		n += count
+		offset = 2
 	}
 
 	// Parse flags
@@ -108,13 +109,11 @@ func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
 	}
 	n += count
 
-	if count, err = p.PacketIdentifier.ReadFrom(r); err != nil {
-		return 0, err
-	}
-	n += count
-
-	if n >= int64(p.Header.Remaining) {
-		return
+	if p.QoS > QoS0 {
+		if count, err = p.PacketIdentifier.ReadFrom(r); err != nil {
+			return 0, err
+		}
+		n += count
 	}
 
 	/* Properties start */
@@ -170,7 +169,7 @@ func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
 			}
 			count += count2
 			p.UserProperties[k] = v
-		case 0x0B: // Subscription indentifier
+		case 0x0B: // Subscription identifier
 			if count, err = p.SubscriptionIdentifier.ReadFrom(r); err != nil {
 				return 0, err
 			}
@@ -185,7 +184,7 @@ func (p *Publish) ReadFrom(r io.Reader) (n int64, err error) {
 	/* Properties end */
 
 	// Read the payload
-	payloadLen := int64(p.Header.Remaining) - n
+	payloadLen := int64(p.Header.Remaining) - n + offset
 	if payloadLen > 0 {
 		p.Payload = make([]byte, payloadLen)
 		if count, err := r.Read(p.Payload); err != nil {
@@ -215,7 +214,10 @@ func (p *Publish) WriteTo(w io.Writer) (n int64, err error) {
 
 	// Calculate length of properties and payload
 	variableHeaderLen += p.Topic.Length(false)
-	variableHeaderLen += p.PacketIdentifier.Length(false)
+
+	if p.QoS > QoS0 {
+		variableHeaderLen += p.PacketIdentifier.Length(false)
+	}
 
 	if p.MessageExpiryInterval > 0 {
 		propertiesLen += p.MessageExpiryInterval.Length(true)
@@ -274,10 +276,12 @@ func (p *Publish) WriteTo(w io.Writer) (n int64, err error) {
 	}
 	n += count
 
-	if count, err = p.PacketIdentifier.WriteTo(w); err != nil {
-		return 0, err
+	if p.QoS > QoS0 {
+		if count, err = p.PacketIdentifier.WriteTo(w); err != nil {
+			return 0, err
+		}
+		n += count
 	}
-	n += count
 
 	/* Properties start */
 	if count, err = propertiesLen.WriteTo(w); err != nil {

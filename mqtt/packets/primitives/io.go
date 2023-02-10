@@ -1,7 +1,7 @@
 /*
  * MIT License
  *
- * Copyright (c) 2022 waj334
+ * Copyright (c) 2022-2023 waj334
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,7 +25,6 @@
 package primitives
 
 import (
-	"encoding/binary"
 	"io"
 	"unsafe"
 )
@@ -46,21 +45,5 @@ func WriteByte(b byte, w io.Writer) error {
 //go:inline
 func ReadByte(r io.Reader) (b byte, err error) {
 	_, err = r.Read(unsafe.Slice(&b, 1))
-	return
-}
-
-//go:inline
-func WriteUint16(val uint16, w io.Writer) (err error) {
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(&val)), 2)
-	binary.BigEndian.PutUint16(buf, val)
-	_, err = w.Write(buf)
-	return
-}
-
-//go:inline
-func WriteUint32(val uint32, w io.Writer) (err error) {
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(&val)), 4)
-	binary.BigEndian.PutUint32(buf, val)
-	_, err = w.Write(buf)
 	return
 }

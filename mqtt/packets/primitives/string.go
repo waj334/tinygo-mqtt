@@ -1,7 +1,7 @@
 /*
  * MIT License
  *
- * Copyright (c) 2022 waj334
+ * Copyright (c) 2022-2023 waj334
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,14 +33,14 @@ type PrimitiveString string
 
 func (p *PrimitiveString) WriteTo(w io.Writer) (n int64, err error) {
 	// Write the length of the string
-	if err = WriteUint16(uint16(len(*p)), w); err != nil {
+	if err = binary.Write(w, binary.BigEndian, uint16(len(*p))); err != nil {
 		return 0, err
 	}
 	n += 2
 
 	// Write the string
-	count, err := w.Write([]byte(*p))
-	if err != nil {
+	var count int
+	if count, err = w.Write([]byte(*p)); err != nil {
 		return 0, err
 	}
 	n += int64(count)
@@ -49,36 +49,32 @@ func (p *PrimitiveString) WriteTo(w io.Writer) (n int64, err error) {
 }
 
 func (p *PrimitiveString) WriteToAsProperty(identifier byte, w io.Writer) (n int64, err error) {
-	if err = WriteByte(identifier, w); err != nil {
+	if _, err = w.Write([]byte{identifier}); err != nil {
 		return 0, err
 	}
+	n++
 
 	if n, err = p.WriteTo(w); err != nil {
 		return 0, err
 	}
 
-	// Account for writing the identifier byte. Saves stack
-	n++
-
 	return
 }
 
 func (p *PrimitiveString) ReadFrom(r io.Reader) (n int64, err error) {
-	lenBuf := make([]byte, 2)
-
-	// Read byte-by-byte to avoid heap escape
-	var count int
-	if count, err = r.Read(lenBuf); err != nil {
+	// Read the 16-bit length
+	var length uint16
+	if err = binary.Read(r, binary.BigEndian, &length); err != nil {
 		return 0, err
 	}
-	n += int64(count)
-
-	// Parse the integer
-	length := binary.BigEndian.Uint16(lenBuf)
+	n += 2
 
 	// Allocate memory for the string
 	buf := make([]byte, length)
-	if count, err := r.Read(buf); err != nil {
+
+	// Read the string
+	var count int
+	if count, err = r.Read(buf); err != nil {
 		return 0, err
 	} else {
 		n += int64(count)
